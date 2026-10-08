@@ -74,6 +74,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate %s: %w", path, err)
 	}
+	if err := s.runRepairs(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: repair %s: %w", path, err)
+	}
 	return s, nil
 }
 

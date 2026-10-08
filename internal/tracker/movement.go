@@ -10,6 +10,7 @@ type movementAcc struct {
 	total      float64 // all sampled seconds
 	car        float64 // seconds with a live car (base for percentages)
 	speed      float64 // integral of speed
+	maxSpeed   float64 // largest speed sample (unit detection)
 	supersonic float64
 	ground     float64
 	wall       float64
@@ -39,6 +40,7 @@ func (a *movementAcc) add(p *statsapi.Player, dt float64) {
 	a.car += dt
 	if p.Speed != nil {
 		a.speed += float64(*p.Speed) * dt
+		a.maxSpeed = max(a.maxSpeed, float64(*p.Speed))
 	}
 	if bv(p.Supersonic) {
 		a.supersonic += dt

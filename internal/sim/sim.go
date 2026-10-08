@@ -318,6 +318,9 @@ var (
 	platforms = []string{"Epic", "Steam", "PS4", "XboxOne", "Switch"}
 )
 
+// kmhPerUU converts the simulator's internal uu/s to the km/h the real game sends.
+const kmhPerUU = 0.036
+
 type simMatch struct {
 	s        *Server
 	guid     string
@@ -397,7 +400,7 @@ func (m *simMatch) state() map[string]any {
 		}
 		if p.Team == m.me.Team { // spectator fields only for own team
 			pj["bHasCar"] = p.demolished <= 0
-			pj["Speed"] = math.Round(p.speed)
+			pj["Speed"] = math.Round(p.speed*kmhPerUU*10) / 10 // the real game sends km/h
 			pj["Boost"] = math.Round(p.boost)
 			pj["bBoosting"] = p.boost > 0 && m.s.rng.Float64() < 0.2
 			pj["bOnGround"] = p.onGround
@@ -515,7 +518,7 @@ func (m *simMatch) randomEvents() int {
 		p.Touches++
 		pre := r.Float64() * 2000
 		m.s.emit(statsapi.EvBallHit, map[string]any{"MatchGuid": m.guid, "Players": []refJSON{p.ref()},
-			"Ball": map[string]any{"PreHitSpeed": pre, "PostHitSpeed": pre + 300 + r.Float64()*2500,
+			"Ball": map[string]any{"PreHitSpeed": pre * kmhPerUU, "PostHitSpeed": (pre + 300 + r.Float64()*2500) * kmhPerUU,
 				"Location": map[string]any{"X": r.Float64()*8000 - 4000, "Y": r.Float64()*10000 - 5000, "Z": r.Float64() * 1500}}})
 	}
 	if r.Float64() < 0.012 {
@@ -573,9 +576,9 @@ func (m *simMatch) goal(ctx context.Context, team int) bool {
 	scorer.Goals++
 	scorer.Score += 100
 	speed := 1500 + r.Float64()*3000
-	d := map[string]any{"GoalSpeed": speed, "GoalTime": float64(300 - m.time), "MatchGuid": m.guid,
+	d := map[string]any{"GoalSpeed": speed * kmhPerUU, "GoalTime": float64(300 - m.time), "MatchGuid": m.guid,
 		"ImpactLocation": map[string]any{"X": r.Float64()*1700 - 850, "Y": 5120 * float64(1-2*team), "Z": r.Float64() * 600},
-		"Scorer":         scorer.ref(), "BallLastTouch": map[string]any{"Player": scorer.ref(), "Speed": speed}}
+		"Scorer":         scorer.ref(), "BallLastTouch": map[string]any{"Player": scorer.ref(), "Speed": speed * kmhPerUU}}
 	if assister != nil {
 		d["Assister"] = assister.ref()
 		assister.Assists++
@@ -605,6 +608,9 @@ func (m *simMatch) goal(ctx context.Context, team int) bool {
 	for i := 0; i < 3; i++ {
 		if !m.tickSecond(ctx) {
 			return false
+		}
+		if i == 1 { // like the real game, the replayed goal fires GoalScored again
+			m.s.emit(statsapi.EvGoalScored, d)
 		}
 	}
 	m.s.emit(statsapi.EvGoalReplayWillEnd, map[string]any{"MatchGuid": m.guid})

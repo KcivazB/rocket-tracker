@@ -14,3 +14,6 @@ trn*.txt
 .idea/
 Thumbs.db
 .DS_Store
+
+# Local debugging copies of user data
+/debug/

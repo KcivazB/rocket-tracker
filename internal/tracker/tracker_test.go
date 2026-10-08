@@ -749,3 +749,95 @@ func TestUnknownTeamGoal(t *testing.T) {
 		t.Fatalf("goals %+v opp %d first %s", m.Goals, m.OppScore, m.FirstGoal)
 	}
 }
+
+// Regression (real game): GoalScored is re-sent while the goal replay plays,
+// which turned a 1-11 loss into 1-23. Goals in replays and duplicates at the
+// same game time count once, and UpdateState stays the authoritative score.
+func TestGoalReplayDuplicatesIgnored(t *testing.T) {
+	h := newHarness(t)
+	h.id = Identity{Names: []string{"Me"}}
+	g := h.playClock(G{Guid: "DUP", Players: []P{me, op1}}, 300, 280)
+	opp := op1
+	for i := 0; i < 11; i++ {
+		goal := map[string]any{"Scorer": opp.ref(), "GoalSpeed": 90}
+		h.send("GoalScored", goal)
+		g.Scores[1]++
+		opp.Goals++
+		g.Players = []P{me, opp}
+		h.update(g)
+		switch i % 3 {
+		case 0: // flagged replay: GoalReplayStart then the re-sent event
+			h.send("GoalReplayStart", map[string]any{})
+			h.send("GoalScored", goal)
+			h.send("GoalReplayEnd", map[string]any{})
+		case 1: // replay frames flagged in UpdateState only
+			g.Replay = true
+			h.update(g)
+			h.send("GoalScored", goal)
+			g.Replay = false
+			h.update(g)
+		case 2: // unflagged duplicate at the same (stopped) game time
+			h.send("GoalScored", goal)
+		}
+		h.send("RoundStarted", map[string]any{})
+		g = h.playClock(g, 279-i*20, 280-(i+1)*20+1)
+	}
+	h.send("MatchEnded", map[string]any{"WinnerTeamNum": 1})
+	m := h.only()
+	if m.TeamScore != 0 || m.OppScore != 11 || len(m.Goals) != 11 {
+		t.Fatalf("score %d-%d with %d goals", m.TeamScore, m.OppScore, len(m.Goals))
+	}
+	if p := m.Players[1]; p.Name != "Opp1" || p.Goals != 11 {
+		t.Fatalf("opponent %+v", p)
+	}
+}
+
+// Even if duplicated GoalScored events slip through, a goal count far above
+// the UpdateState score must not replace it.
+func TestScoreNotInflatedByGoalCount(t *testing.T) {
+	h := newHarness(t)
+	h.id = Identity{Names: []string{"Me"}}
+	g := h.playClock(G{Guid: "INF", Players: []P{me, op1}}, 300, 290)
+	for i := 0; i < 5; i++ { // 5 events at distinct times for 2 real goals
+		h.send("GoalScored", map[string]any{"Scorer": op1.ref()})
+		g = h.playClock(g, 289-i*10, 280-i*10)
+	}
+	g.Scores = [2]int{0, 2}
+	h.update(g)
+	h.playClock(g, 230, 0)
+	h.send("MatchEnded", map[string]any{"WinnerTeamNum": 1})
+	if m := h.only(); m.TeamScore != 0 || m.OppScore != 2 {
+		t.Fatalf("score %d-%d, want 0-2", m.TeamScore, m.OppScore)
+	}
+}
+
+// Regression (real game): speeds arrive in km/h although documented as uu/s;
+// the dashboard showed 2 km/h average speed. Stored speeds are uu/s.
+func TestSpeedUnitDetection(t *testing.T) {
+	for _, c := range []struct {
+		name                    string
+		car, hit, goal          float64
+		wantCar, wantHit, wantG float64
+	}{
+		{"kmh", 60, 90, 100, 1666.7, 2500, 2777.8},
+		{"uu/s", 1500, 2000, 3000, 1500, 2000, 3000},
+	} {
+		h := newHarness(t)
+		h.id = Identity{Names: []string{"Me"}}
+		p := me
+		p.Spec = map[string]any{"bHasCar": true, "Speed": c.car, "Boost": 50, "bOnGround": true}
+		g := h.playClock(G{Guid: "SPD" + c.name, Players: []P{p, op1}}, 300, 250)
+		h.send("BallHit", map[string]any{"Players": []any{me.ref()}, "Ball": map[string]any{"PostHitSpeed": c.hit}})
+		h.send("GoalScored", map[string]any{"Scorer": me.ref(), "GoalSpeed": c.goal})
+		g.Scores = [2]int{1, 0}
+		h.playClock(g, 249, 0)
+		h.send("MatchEnded", map[string]any{"WinnerTeamNum": 0})
+		m := h.only()
+		if m.Movement == nil || m.Hits == nil || len(m.Goals) != 1 {
+			t.Fatalf("%s: missing data %+v %+v %+v", c.name, m.Movement, m.Hits, m.Goals)
+		}
+		if m.Movement.AvgSpeed != c.wantCar || m.Hits.MaxSpeed != c.wantHit || m.Hits.AvgSpeed != c.wantHit || m.Goals[0].Speed != c.wantG {
+			t.Fatalf("%s: car %v hit %v/%v goal %v", c.name, m.Movement.AvgSpeed, m.Hits.AvgSpeed, m.Hits.MaxSpeed, m.Goals[0].Speed)
+		}
+	}
+}

@@ -618,6 +618,9 @@ func (t *Tracker) onGoal(d *statsapi.GoalScored) {
 	if m == nil || !t.sameMatch(string(d.MatchGUID)) {
 		return
 	}
+	if m.replay {
+		return // the game re-sends GoalScored while replaying a goal
+	}
 	g := rawGoal{t: m.elapsed(), overtime: m.overtime, team: -1, speed: float64(d.GoalSpeed)}
 	if d.Scorer.Valid() {
 		s := *d.Scorer
@@ -625,6 +628,14 @@ func (t *Tracker) onGoal(d *statsapi.GoalScored) {
 		g.team = int(s.TeamNum)
 	} else if d.BallLastTouch != nil && d.BallLastTouch.Player.Valid() {
 		g.team = int(d.BallLastTouch.Player.TeamNum)
+	}
+	// The clock is stopped from a goal until the next kickoff, so a second
+	// GoalScored for the same scorer at the same game time is the same goal
+	// (replay frames not flagged as such).
+	if n := len(m.goals); n > 0 && m.haveTime {
+		if last := m.goals[n-1]; math.Abs(last.t-g.t) < 1 && sameRef(last.scorer, g.scorer) {
+			return
+		}
 	}
 	if d.Assister.Valid() {
 		a := *d.Assister
@@ -783,8 +794,9 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 		}
 	}
 	// The last UpdateState may predate the final goal (e.g. an overtime
-	// winner immediately followed by MatchEnded): GoalScored events are a
-	// lower bound for the scores and for each scorer's goals.
+	// winner immediately followed by MatchEnded), so GoalScored events can add
+	// that one goal. UpdateState stays authoritative otherwise: any larger gap
+	// means duplicated GoalScored events, not missed score updates.
 	goalsUs, goalsThem := 0, 0
 	scored := map[*pstate]int{}
 	for _, g := range m.goals {
@@ -798,12 +810,12 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 			scored[p]++
 		}
 	}
-	out.TeamScore = max(out.TeamScore, goalsUs)
-	out.OppScore = max(out.OppScore, goalsThem)
+	out.TeamScore = addFinalGoal(out.TeamScore, goalsUs)
+	out.OppScore = addFinalGoal(out.OppScore, goalsThem)
 	for p, n := range scored {
-		if n > p.goals {
-			p.score += 100 * (n - p.goals)
-			p.goals = n
+		if g := addFinalGoal(p.goals, n); g > p.goals {
+			p.score += 100 * (g - p.goals)
+			p.goals = g
 		}
 	}
 
@@ -857,6 +869,9 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 		Assists: me.assists, Saves: me.saves, Touches: me.touches, Demos: me.demos}
 
 	out.Movement = me.mv.result()
+	if out.Movement != nil {
+		out.Movement.AvgSpeed = round1(out.Movement.AvgSpeed * speedFactor(me.mv.maxSpeed, maxCarKmh))
+	}
 
 	// Hits.
 	var hc, hsc int
@@ -875,15 +890,21 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 		}
 	}
 	if hc > 0 {
-		out.Hits = &store.Hits{Count: hc, MaxSpeed: round1(hmax)}
+		k := speedFactor(hmax, maxBallKmh)
+		out.Hits = &store.Hits{Count: hc, MaxSpeed: round1(hmax * k)}
 		if hsc > 0 {
-			out.Hits.AvgSpeed = round1(hsum / float64(hsc))
+			out.Hits.AvgSpeed = round1(hsum / float64(hsc) * k)
 		}
 	}
 
 	// Goals.
+	gmax := 0.0
 	for _, g := range m.goals {
-		sg := store.Goal{T: g.t, Speed: round1(g.speed), Overtime: g.overtime}
+		gmax = max(gmax, g.speed)
+	}
+	gk := speedFactor(gmax, maxBallKmh)
+	for _, g := range m.goals {
+		sg := store.Goal{T: g.t, Speed: round1(g.speed * gk), Overtime: g.overtime}
 		switch {
 		case g.team == myTeam:
 			sg.Team = "us"
@@ -923,6 +944,42 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 }
 
 func round1(f float64) float64 { return math.Round(f*10) / 10 }
+
+// addFinalGoal returns the UpdateState score, plus one when the GoalScored
+// count shows exactly one more goal (the final goal, scored after the last
+// UpdateState).
+func addFinalGoal(score, counted int) int {
+	if counted == score+1 {
+		return counted
+	}
+	return score
+}
+
+// sameRef reports whether two optional player references are the same player.
+func sameRef(a, b *statsapi.PlayerRef) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Name == b.Name && a.TeamNum == b.TeamNum
+}
+
+// The Stats API documents speeds in Unreal units/s, but the game sends km/h.
+// Stored speeds are uu/s (the JSON contract), so the unit is detected per
+// match from the largest value: a car tops out at ~83 km/h (2300 uu/s) and
+// ball hits/goals stay far below 250 km/h, while in uu/s they exceed these.
+const (
+	uuPerKmh   = 1 / 0.036
+	maxCarKmh  = 120.0
+	maxBallKmh = 250.0
+)
+
+// speedFactor returns the factor converting values whose largest is peak to uu/s.
+func speedFactor(peak, kmhLimit float64) float64 {
+	if peak > 0 && peak <= kmhLimit {
+		return uuPerKmh
+	}
+	return 1
+}
 
 // Live is the in-match snapshot exposed in /api/status.
 type Live struct {
