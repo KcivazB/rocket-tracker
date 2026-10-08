@@ -251,6 +251,92 @@
     };
   }
 
+  /* ---------- days & hours insights ---------- */
+  var WEEKDAY_NAMES = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+  var TIME_MIN_GAMES = 20;   // below this, no verdicts at all
+  var TIME_SMOOTH_K = 10;    // pseudo-games pulling small samples toward the overall win rate
+  var DAY_START_H = 6;       // hours are ordered from 6h so late-night sessions stay contiguous
+  var TIME_MIN_GAP = 3;      // pts from the average below which a best/worst verdict isn't worth stating
+  // "entre 20h et 23h" for a window [from, from+len).
+  function hourRange(from, len) { return 'entre ' + from + 'h et ' + ((from + len) % 24) + 'h'; }
+  /**
+   * Best/worst weekday and hour window by win rate, plus a weekday x hour grid.
+   * Rankings use a smoothed rate (wins + k*p0) / (n + k) so tiny samples don't win;
+   * reported rates are the raw ones. Windows are 2-4 consecutive hours (circular).
+   */
+  function computeTimeInsights(ms) {
+    var dec = (ms || []).filter(function (m) { return m && isDecided(m); });
+    var total = dec.length, totalWins = dec.filter(isWin).length;
+    var p0 = total ? totalWins / total : null;
+    var grid = [], days = [], hours = [];
+    for (var d = 0; d < 7; d++) {
+      days.push({ idx: d, n: 0, wins: 0 });
+      grid.push([]);
+      for (var h0 = 0; h0 < 24; h0++) grid[d].push({ n: 0, wins: 0 });
+    }
+    for (var h = 0; h < 24; h++) hours.push({ n: 0, wins: 0 });
+    dec.forEach(function (m) {
+      var dt = new Date(m._t != null ? m._t : startMs(m));
+      var wd = (dt.getDay() + 6) % 7, hr = dt.getHours(), w = isWin(m) ? 1 : 0;
+      days[wd].n++; days[wd].wins += w;
+      hours[hr].n++; hours[hr].wins += w;
+      grid[wd][hr].n++; grid[wd][hr].wins += w;
+    });
+    var smooth = function (b) { return (b.wins + TIME_SMOOTH_K * p0) / (b.n + TIME_SMOOTH_K); };
+    var describe = function (b) { b.wr = ratio(b.wins, b.n); b.delta = b.wr != null && p0 != null ? (b.wr - p0) * 100 : null; return b; };
+    days.forEach(function (b) { describe(b); b.name = WEEKDAY_NAMES[b.idx]; });
+    hours.forEach(describe);
+    grid.forEach(function (row) { row.forEach(describe); });
+
+    var out = { total: total, wr: p0, days: days, hours: hours, grid: grid, enough: total >= TIME_MIN_GAMES,
+      bestDay: null, worstDay: null, bestWindow: null, worstWindow: null, busiestDay: null };
+    if (!total) return out;
+    out.busiestDay = days.slice().sort(function (a, b) { return b.n - a.n; })[0];
+    if (!out.enough) return out;
+
+    var dayMin = Math.max(5, Math.round(total * 0.05));
+    var cand = days.filter(function (b) { return b.n >= dayMin; });
+    cand.sort(function (a, b) { return smooth(b) - smooth(a) || b.n - a.n; });
+    if (cand.length >= 2) {
+      out.bestDay = cand[0];
+      out.worstDay = cand[cand.length - 1];
+      if (smooth(out.worstDay) >= smooth(out.bestDay)) out.worstDay = null;
+    }
+
+    var winMin = Math.max(8, Math.round(total * 0.08));
+    var windows = [];
+    for (var len = 2; len <= 4; len++) {
+      for (var from = 0; from < 24; from++) {
+        var b = { from: from, len: len, n: 0, wins: 0 };
+        for (var k = 0; k < len; k++) { var hb = hours[(from + k) % 24]; b.n += hb.n; b.wins += hb.wins; }
+        // Edge hours must carry a real share of the window, so the label only spans hours actually played.
+        var edgeMin = Math.max(2, Math.ceil(b.n * 0.1));
+        if (b.n < winMin || hours[from].n < edgeMin || hours[(from + len - 1) % 24].n < edgeMin) continue;
+        b.score = smooth(b);
+        windows.push(describe(b));
+      }
+    }
+    if (windows.length) {
+      windows.sort(function (a, b) { return b.score - a.score || b.n - a.n; });
+      out.bestWindow = windows[0];
+      var inBest = function (hr) { return (hr - out.bestWindow.from + 24) % 24 < out.bestWindow.len; };
+      var overlaps = function (w) { for (var i = 0; i < w.len; i++) if (inBest((w.from + i) % 24)) return true; return false; };
+      var rest = windows.filter(function (w) { return !overlaps(w); });
+      var worst = rest.length ? rest[rest.length - 1] : null;
+      if (worst && worst.score < out.bestWindow.score) {
+        // Among near-ties at the bottom, prefer the larger sample.
+        out.worstWindow = worst;
+      }
+      [out.bestWindow, out.worstWindow].forEach(function (w) { if (w) w.label = hourRange(w.from, w.len); });
+    }
+    // Only state verdicts that are clearly away from the average.
+    if (out.bestDay && out.bestDay.delta < TIME_MIN_GAP) out.bestDay = null;
+    if (out.worstDay && out.worstDay.delta > -TIME_MIN_GAP) out.worstDay = null;
+    if (out.bestWindow && out.bestWindow.delta < TIME_MIN_GAP) out.bestWindow = null;
+    if (out.worstWindow && out.worstWindow.delta > -TIME_MIN_GAP) out.worstWindow = null;
+    return out;
+  }
+
   function computeSituations(ms) {
     var dec = ms.filter(isDecided);
     var firstUs = wl(dec.filter(function (m) { return m.first_goal === 'us' && goalsComplete(m); }));
@@ -795,7 +881,7 @@
     computeActivity: computeActivity, computeGoalDiffDist: computeGoalDiffDist, computeMental: computeMental,
     computeSituations: computeSituations, computeGoalsPerMinute: computeGoalsPerMinute, computeMechanics: computeMechanics,
     computeStatfeed: computeStatfeed, statfeedLabel: statfeedLabel, prettyArena: prettyArena, computeArenas: computeArenas,
-    computeTeammates: computeTeammates, computeGoal: computeGoal, trackedByMode: trackedByMode, trackerUrl: trackerUrl, fmtNum: fmtNum, fmtPct: fmtPct, fmtPct100: fmtPct100, fmtSigned: fmtSigned,
+    computeTeammates: computeTeammates, computeGoal: computeGoal, computeTimeInsights: computeTimeInsights, trackedByMode: trackedByMode, trackerUrl: trackerUrl, fmtNum: fmtNum, fmtPct: fmtPct, fmtPct100: fmtPct100, fmtSigned: fmtSigned,
     fmtClock: fmtClock, fmtHours: fmtHours, dayKey: dayKey,
     parseRoute: parseRoute, DEFAULT_HIST_FILTERS: DEFAULT_HIST_FILTERS, filterHistory: filterHistory, filterManualHistory: filterManualHistory,
     groupHistory: groupHistory, paginateGroups: paginateGroups, summarizeHistory: summarizeHistory, matchNeighbors: matchNeighbors,
@@ -1450,6 +1536,77 @@
     if (firstH >= 0) hours = hours.slice(Math.max(0, firstH - 1), Math.min(hours.length, lastH + 2));
     wrBars('c-hour', hours, { thick: 22, title: function (i) { var h = hours[i].h; return 'De ' + h + 'h à ' + ((h + 1) % 24) + 'h'; } });
     wrBars('c-weekday', m.byWeekday, { thick: 32, title: function (i) { return ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'][i]; } });
+  }
+
+  /* ---------- render: days & hours ---------- */
+  function timeTile(cls, label, value, b, empty) {
+    if (!b) return '<div class="card kpi time-tile ' + cls + '"><span class="kpi-label">' + label + '</span><span class="kpi-value muted">—</span><span class="kpi-sub">' + empty + '</span></div>';
+    var d = b.delta, sign = d > 0 ? '+' : d < 0 ? '−' : '±';
+    return '<div class="card kpi time-tile ' + cls + '"><span class="kpi-label">' + label + '</span>' +
+      '<span class="kpi-value">' + value + '</span>' +
+      '<span class="kpi-sub"><b>' + fmtPct(b.wr) + '</b> de victoires · ' + plural(b.n, 'match') +
+      '<br><span class="' + (d >= 0 ? 'pos' : 'neg') + '">' + sign + fmtNum(Math.abs(d)) + ' pts</span> vs votre moyenne</span></div>';
+  }
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  function renderTime(ms) {
+    var t = computeTimeInsights(ms);
+    var sum;
+    if (!t.total) sum = 'Pas encore de match sur cette sélection.';
+    else if (!t.enough) sum = 'Encore ' + plural(TIME_MIN_GAMES - t.total, 'match') + ' à jouer sur cette sélection pour une analyse fiable des jours et horaires.';
+    else {
+      var parts = [];
+      if (t.bestDay) parts.push('le <b>' + t.bestDay.name + '</b>');
+      if (t.bestWindow) parts.push('<b>' + t.bestWindow.label + '</b>');
+      sum = parts.length ? 'En général, vous gagnez le plus ' + parts.join(', et ') + '.' : 'Pas d’écart marqué selon le jour ou l’heure pour l’instant.';
+      if (t.worstDay || t.worstWindow) {
+        var bad = [];
+        if (t.worstDay) bad.push('le ' + t.worstDay.name);
+        if (t.worstWindow) bad.push(t.worstWindow.label);
+        sum += ' Moins bien ' + bad.join(' et ') + '.';
+      }
+    }
+    $('#time-summary').innerHTML = sum + (t.total ? ' <span class="muted">Moyenne : ' + fmtPct(t.wr) + ' sur ' + plural(t.total, 'match') + ' (filtres ci-dessus appliqués).</span>' : '');
+    var few = t.enough ? 'Pas d’écart marqué selon le jour' : 'Pas encore assez de matchs';
+    var fewH = t.enough ? 'Pas d’écart marqué selon l’heure' : 'Pas encore assez de matchs';
+    $('#time-tiles').innerHTML =
+      timeTile('best', 'Meilleur jour', t.bestDay ? cap(t.bestDay.name) : '', t.bestDay, few) +
+      timeTile('worst', 'Jour le plus difficile', t.worstDay ? cap(t.worstDay.name) : '', t.worstDay, few) +
+      timeTile('best', 'Meilleur créneau', t.bestWindow ? t.bestWindow.from + 'h – ' + ((t.bestWindow.from + t.bestWindow.len) % 24) + 'h' : '', t.bestWindow, fewH) +
+      timeTile('worst', 'Créneau le plus difficile', t.worstWindow ? t.worstWindow.from + 'h – ' + ((t.worstWindow.from + t.worstWindow.len) % 24) + 'h' : '', t.worstWindow, fewH);
+    $('#m-busy').textContent = t.busiestDay && t.busiestDay.n ? 'Jour le plus joué : ' + t.busiestDay.name + ' (' + plural(t.busiestDay.n, 'match') + ')' : '';
+
+    // Heatmap: weekday rows x hour columns (from 6h), trimmed to the played hours.
+    var order = [];
+    for (var i = 0; i < 24; i++) order.push((i + DAY_START_H) % 24);
+    var played = order.filter(function (h) { return t.hours[h].n > 0; });
+    var cols = order;
+    if (played.length) {
+      var a = order.indexOf(played[0]), z = order.indexOf(played[played.length - 1]);
+      cols = order.slice(a, z + 1);
+    }
+    var minCell = 3;
+    var head = '<div class="hm-corner"></div>' + cols.map(function (h) { return '<div class="hm-h">' + h + 'h</div>'; }).join('');
+    var rows = t.grid.map(function (row, d) {
+      return '<div class="hm-d">' + cap(WEEKDAY_NAMES[d]).slice(0, 3) + '.</div>' + cols.map(function (h) {
+        var c = row[h];
+        var tip = cap(WEEKDAY_NAMES[d]) + ' ' + h + 'h–' + ((h + 1) % 24) + 'h · ' +
+          (c.n ? fmtPct(c.wr) + ' de victoires (' + c.wins + ' V – ' + (c.n - c.wins) + ' D)' + (c.n < minCell ? ' · échantillon faible' : '') : 'aucun match');
+        var style = '', cls = 'hm-c';
+        if (!c.n) cls += ' empty';
+        else if (c.n < minCell) cls += ' few';
+        else {
+          // Diverging: distance from 50 % sets the strength, sign sets the hue.
+          var dist = Math.min(1, Math.abs(c.wr - 0.5) / 0.3);
+          var col = c.wr >= 0.5 ? 'var(--us)' : 'var(--loss)';
+          style = ' style="background:color-mix(in srgb, ' + col + ' ' + Math.round(12 + dist * 78) + '%, var(--hm-mid))"';
+          if (dist > 0.55) cls += ' strong';
+        }
+        return '<div class="' + cls + '"' + style + ' title="' + esc(tip) + '" aria-label="' + esc(tip) + '">' + (c.n ? c.n : '') + '</div>';
+      }).join('');
+    }).join('');
+    var grid = $('#time-heatmap');
+    grid.style.setProperty('--hm-cols', cols.length);
+    grid.innerHTML = t.total ? head + rows : '<p class="muted small">Pas encore de données.</p>';
   }
 
   /* ---------- render: mechanics ---------- */
@@ -2160,7 +2317,7 @@
     $('#no-results').hidden = !empty;
     $('#content').hidden = empty;
     if (!empty) {
-      var steps = [renderKpis, renderProgression, renderActivity, renderGoals, renderSituations, renderMental, renderMechanics, renderFeed, renderArenas, renderMates];
+      var steps = [renderKpis, renderProgression, renderActivity, renderGoals, renderSituations, renderMental, renderTime, renderMechanics, renderFeed, renderArenas, renderMates];
       steps.forEach(function (fn) {
         try { fn(ms); } catch (e) { console.error('render failed:', fn.name, e); }
       });

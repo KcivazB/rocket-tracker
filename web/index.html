@@ -192,9 +192,24 @@
             <div class="card tilt-card" id="tilt"></div>
             <figure class="card chart-card"><figcaption><span class="card-title">% de victoire selon le n° du match dans la session</span><span class="card-meta" id="m-sess"></span></figcaption><div class="chart-box"><canvas id="c-session"></canvas></div></figure>
           </div>
+        </section>
+
+        <!-- Days & hours -->
+        <section class="section" aria-labelledby="h-time">
+          <div class="section-head">
+            <h2 id="h-time">Jours &amp; horaires</h2>
+            <p class="section-sub">Quand gagnez-vous le plus&nbsp;? Heure locale de début de match</p>
+          </div>
+          <p class="time-summary" id="time-summary"></p>
+          <div class="time-tiles" id="time-tiles"></div>
+          <figure class="card chart-card mt">
+            <figcaption><span class="card-title">% de victoire par jour et par heure</span><span class="card-meta" id="m-busy"></span></figcaption>
+            <div class="hm-legend" aria-hidden="true"><span class="hm-scale"><span>Plus de défaites</span><i class="hm-ramp"></i><span>Plus de victoires</span></span><span class="muted">· le chiffre = nombre de matchs · case pâle : moins de 3 matchs</span></div>
+            <div class="hm-scroll"><div class="heatmap" id="time-heatmap" role="img" aria-label="Pourcentage de victoire par jour de la semaine et par heure"></div></div>
+          </figure>
           <div class="grid grid-2 mt">
-            <figure class="card chart-card"><figcaption><span class="card-title">% de victoire par heure</span><span class="card-meta">heure locale</span></figcaption><div class="chart-box"><canvas id="c-hour"></canvas></div></figure>
             <figure class="card chart-card"><figcaption><span class="card-title">% de victoire par jour de la semaine</span></figcaption><div class="chart-box"><canvas id="c-weekday"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title">% de victoire par heure</span><span class="card-meta">heure locale</span></figcaption><div class="chart-box"><canvas id="c-hour"></canvas></div></figure>
           </div>
         </section>
 

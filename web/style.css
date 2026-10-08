@@ -693,3 +693,32 @@ a.row-link:hover, a.row-link:focus-visible { color: var(--us); text-decoration: 
   .cmp-table th, .cmp-table td { padding: 7px 5px; }
   .cmp-table td.b, .cmp-table thead th.b { display: none; }
 }
+
+/* ---------- days & hours ---------- */
+:root { --hm-mid: #383f49; }
+@media (prefers-color-scheme: light) { :root { --hm-mid: #e9ebee; } }
+.time-summary { margin: 0 0 12px; font-size: 15px; color: var(--text); line-height: 1.5; }
+.time-summary .muted { font-size: 13px; }
+.time-tiles { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.time-tile .kpi-value { font-size: 24px; }
+.time-tiles + .card { margin-top: 12px; }
+.time-tile.best { border-top: 3px solid var(--us); }
+.time-tile.worst { border-top: 3px solid var(--loss); }
+.time-tile .kpi-sub b { color: var(--text); font-weight: 650; }
+.time-tile .kpi-sub .pos { color: var(--win); font-weight: 600; }
+.time-tile .kpi-sub .neg { color: var(--loss); font-weight: 600; }
+.hm-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--text-2); padding: 0 16px 8px; }
+.hm-ramp { display: inline-block; width: 90px; height: 10px; border-radius: 3px;
+  background: linear-gradient(90deg, var(--loss), var(--hm-mid) 50%, var(--us)); }
+.hm-scroll { overflow-x: auto; padding: 0 16px 16px; }
+.heatmap { display: grid; grid-template-columns: 44px repeat(var(--hm-cols, 24), minmax(26px, 56px)); gap: 2px; min-width: max-content; }
+.hm-scale { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.hm-h { font-size: 10.5px; color: var(--muted); text-align: center; padding-bottom: 2px; }
+.hm-d { font-size: 12px; color: var(--text-2); display: flex; align-items: center; font-weight: 550; }
+.hm-c { height: 30px; border-radius: 4px; background: var(--hm-mid); display: flex; align-items: center; justify-content: center;
+  font-size: 10.5px; color: var(--text); font-variant-numeric: tabular-nums; cursor: default; }
+.hm-c.empty { background: transparent; border: 1px dashed var(--border); }
+.hm-c.few { background: color-mix(in srgb, var(--hm-mid) 55%, transparent); color: var(--muted); }
+.hm-c.strong { color: #fff; }
+.hm-c:hover { box-shadow: 0 0 0 2px var(--focus); }
+@media (max-width: 1200px) { .time-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

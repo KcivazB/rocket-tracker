@@ -20,6 +20,8 @@ et affiche ta progression dans un dashboard local : http://localhost:8765
 - **Tableau de bord** : winrate, progression, analyse mentale, mécanique, arènes, coéquipiers…
 - **Objectif saison** : calendrier des games par jour (objectif réglable, 10 games de 1v1 par défaut),
   séries, projection. Clique sur un jour pour ajouter des games jouées sans le tracker.
+- **Jours & horaires** : ton meilleur et ton pire jour de la semaine et créneau horaire (en % de victoires),
+  avec une carte jour × heure.
 - **Historique** : tous les matchs jour par jour, avec filtres et recherche par joueur ou arène.
 - **Page match** : score, tableau des scores, chronologie des buts, comparaison à ta moyenne,
   mouvement et frappes, liens tracker.gg vers les profils des joueurs.
