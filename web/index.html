@@ -8,37 +8,53 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230f1620'/%3E%3Cpath d='M9 22 L16 7 L23 22 L16 18 Z' fill='%233987e5'/%3E%3Cpath d='M16 18 L23 22 L16 25 Z' fill='%23d95926'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
+<!-- Texts: data-i18n / data-i18n-html / data-i18n-attr keys of i18n.js (the French content is only a fallback). -->
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="#/" aria-label="Rocket Tracker — tableau de bord">
+      <a class="brand" href="#/" data-i18n-attr="aria-label:ui.brandAria">
         <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
           <path d="M9 22 L16 7 L23 22 L16 18 Z" fill="var(--us)"/>
           <path d="M16 18 L23 22 L16 25 Z" fill="var(--them)"/>
         </svg>
         <span>Rocket Tracker</span>
       </a>
-      <nav class="nav" aria-label="Navigation principale">
-        <a href="#/" data-nav="dash">Tableau de bord</a>
-        <a href="#/historique" data-nav="history">Historique</a>
+      <nav class="nav" data-i18n-attr="aria-label:ui.mainNav">
+        <a href="#/" data-nav="dash" data-i18n="nav.dash">Tableau de bord</a>
+        <a href="#/history" data-nav="history" data-i18n="nav.history">Historique</a>
+        <a href="#/players" data-nav="players" id="nav-players" hidden data-i18n="nav.players">Joueurs</a>
       </nav>
       <div class="topbar-actions">
-        <span id="conn-pill" class="pill pill-muted" title="État de la connexion à Rocket League">
-          <span class="dot"></span><span class="pill-label">Connexion…</span>
+        <span id="conn-pill" class="pill pill-muted" data-i18n-attr="title:st.pillTip">
+          <span class="dot"></span><span class="pill-label" data-i18n="ui.connecting">Connexion…</span>
         </span>
-        <a id="export-csv" class="btn btn-ghost" href="/api/export.csv" download title="Exporter tous les matchs en CSV (Excel, Grafana…)">
+        <a id="export-csv" class="btn btn-ghost" href="/api/export.csv" download data-i18n-attr="title:ui.exportTip">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" /></svg>
-          <span class="hide-sm">Export CSV</span>
+          <span class="hide-sm" data-i18n="ui.export">Export CSV</span>
         </a>
-        <button id="open-settings" class="btn btn-ghost" type="button" title="Réglages">
+        <button id="open-settings" class="btn btn-ghost" type="button" data-i18n-attr="title:ui.settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-          <span class="hide-sm">Réglages</span>
+          <span class="hide-sm" data-i18n="ui.settings">Réglages</span>
         </button>
+        <div id="user-menu" class="user-menu" hidden>
+          <button type="button" class="btn btn-ghost" data-open-devices data-i18n-attr="title:ui.devicesTip">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+            <span class="hide-sm" data-i18n="ui.devices">Appareils</span>
+          </button>
+          <form method="post" action="/auth/logout" class="logout-form">
+            <button type="submit" class="btn btn-ghost user-btn" data-i18n-attr="title:ui.logoutTip">
+              <span class="avatar sm" id="me-avatar" aria-hidden="true"></span><span class="hide-sm" id="me-name"></span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg>
+              <span class="sr-only" data-i18n="ui.logout">Déconnexion</span>
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   </header>
 
   <main class="container">
+    <section id="player-banner" class="card player-banner" hidden data-i18n-attr="aria-label:ui.playerShown"></section>
     <div id="warnings" class="warnings" aria-live="polite"></div>
     <section id="live" class="live" hidden aria-live="polite"></section>
 
@@ -53,14 +69,14 @@
           <rect x="108" y="28" width="8" height="24" rx="2" fill="var(--them)" opacity=".85"/>
           <circle cx="78" cy="34" r="6" fill="var(--text)"/>
         </svg>
-        <h1>Bienvenue sur Rocket Tracker&nbsp;!</h1>
-        <p class="lead">Aucun match enregistré pour l’instant. Trois étapes et vos statistiques apparaîtront ici automatiquement.</p>
+        <h1 data-i18n-html="onb.localTitle">Bienvenue sur Rocket Tracker&nbsp;!</h1>
+        <p class="lead" data-i18n="onb.localLead">Aucun match enregistré pour l’instant. Trois étapes et vos statistiques apparaîtront ici automatiquement.</p>
         <ol class="steps">
-          <li><span class="step-n">1</span><div><strong>Activez l’API Stats de Rocket League</strong><br>Dans un terminal, lancez <code>rltracker setup</code> (une demande d’autorisation administrateur peut apparaître).</div></li>
-          <li><span class="step-n">2</span><div><strong>Redémarrez Rocket League</strong><br>Le jeu ne lit sa configuration qu’au démarrage.</div></li>
-          <li><span class="step-n">3</span><div><strong>Jouez un match</strong><br>Il apparaîtra ici dès la fin de la partie — cette page se met à jour toute seule.</div></li>
+          <li><span class="step-n">1</span><div data-i18n-html="onb.local1"><strong>Activez l’API Stats de Rocket League</strong><br>Dans un terminal, lancez <code>rltracker setup</code> (une demande d’autorisation administrateur peut apparaître).</div></li>
+          <li><span class="step-n">2</span><div data-i18n-html="onb.local2"><strong>Redémarrez Rocket League</strong><br>Le jeu ne lit sa configuration qu’au démarrage.</div></li>
+          <li><span class="step-n">3</span><div data-i18n-html="onb.local3"><strong>Jouez un match</strong><br>Il apparaîtra ici dès la fin de la partie — cette page se met à jour toute seule.</div></li>
         </ol>
-        <p class="muted small">Astuce&nbsp;: renseignez votre pseudo dans <button type="button" class="linklike" data-open-settings>Réglages</button> si vous jouez sur plusieurs comptes.</p>
+        <p class="muted small" data-i18n-html="onb.localTip">Astuce&nbsp;: renseignez votre pseudo dans <button type="button" class="linklike" data-open-settings>Réglages</button> si vous jouez sur plusieurs comptes.</p>
       </div>
     </section>
 
@@ -68,83 +84,83 @@
       <!-- Season goal (independent of the filters below) -->
       <section class="section goal-section" aria-labelledby="h-goal" id="goal-section">
         <div class="section-head">
-          <h2 id="h-goal">Objectif saison</h2>
-          <p class="section-sub"><span id="goal-sub"></span> · <button type="button" class="linklike" data-open-settings>modifier</button></p>
+          <h2 id="h-goal" data-i18n="ui.goalTitle">Objectif saison</h2>
+          <p class="section-sub"><span id="goal-sub"></span><span data-goal-edit> · <button type="button" class="linklike" data-open-settings data-i18n="ui.edit">modifier</button></span></p>
         </div>
         <div class="goal-kpis" id="goal-kpis"></div>
         <div class="cal-legend" aria-hidden="true">
-          <span><i class="cal-swatch miss"></i>0 game</span>
-          <span><i class="cal-swatch l1"></i><i class="cal-swatch l2"></i><i class="cal-swatch l3"></i>en cours</span>
-          <span><i class="cal-swatch met"></i>objectif atteint</span>
-          <span><i class="cal-swatch manual"></i>saisie manuelle</span>
-          <span class="muted">Games en ligne terminées (abandons exclus) · cliquez sur un jour pour ajouter des games</span>
+          <span><i class="cal-swatch miss"></i><span data-i18n="ui.calZero">0 game</span></span>
+          <span><i class="cal-swatch l1"></i><i class="cal-swatch l2"></i><i class="cal-swatch l3"></i><span data-i18n="ui.calProgress">en cours</span></span>
+          <span><i class="cal-swatch met"></i><span data-i18n="goal.reached">objectif atteint</span></span>
+          <span><i class="cal-swatch manual"></i><span data-i18n="ui.calManual">saisie manuelle</span></span>
+          <span class="muted"><span data-i18n="ui.calNote">Games en ligne terminées (abandons exclus)</span><span data-goal-edit data-i18n="ui.calClick"> · cliquez sur un jour pour ajouter des games</span></span>
         </div>
-        <p class="goal-hint" id="goal-hint" hidden>Pour saisir des games de jours passés, fixez la <button type="button" class="linklike" data-open-settings>date de début de saison</button>.</p>
+        <p class="goal-hint" id="goal-hint" hidden data-i18n-html="ui.goalHint">Pour saisir des games de jours passés, fixez la <button type="button" class="linklike" data-open-settings>date de début de saison</button>.</p>
         <div class="cal-grid" id="goal-cal"></div>
       </section>
 
       <!-- Filters -->
-      <section class="filters" aria-label="Filtres">
+      <section class="filters" data-i18n-attr="aria-label:ui.filters">
         <div class="filter-group">
-          <span class="filter-label">Mode</span>
-          <div class="seg" id="f-mode" role="radiogroup" aria-label="Mode">
-            <button type="button" data-v="all">Tous</button>
+          <span class="filter-label" data-i18n="tbl.mode">Mode</span>
+          <div class="seg" id="f-mode" role="radiogroup" data-i18n-attr="aria-label:tbl.mode">
+            <button type="button" data-v="all" data-i18n="common.all">Tous</button>
             <button type="button" data-v="1v1">1v1</button>
             <button type="button" data-v="2v2">2v2</button>
             <button type="button" data-v="3v3">3v3</button>
-            <button type="button" data-v="other">Autres</button>
+            <button type="button" data-v="other" data-i18n="common.other">Autres</button>
           </div>
         </div>
         <div class="filter-group">
-          <span class="filter-label">Période</span>
-          <div class="seg" id="f-period" role="radiogroup" aria-label="Période">
-            <button type="button" data-v="7">7j</button>
-            <button type="button" data-v="30">30j</button>
-            <button type="button" data-v="90">90j</button>
-            <button type="button" data-v="all">Tout</button>
+          <span class="filter-label" data-i18n="ui.period">Période</span>
+          <div class="seg" id="f-period" role="radiogroup" data-i18n-attr="aria-label:ui.period">
+            <button type="button" data-v="7" data-i18n="ui.d7">7j</button>
+            <button type="button" data-v="30" data-i18n="ui.d30">30j</button>
+            <button type="button" data-v="90" data-i18n="ui.d90">90j</button>
+            <button type="button" data-v="all" data-i18n="ui.allTime">Tout</button>
           </div>
         </div>
         <div class="filter-group">
-          <label class="filter-label" for="f-tag">Type</label>
+          <label class="filter-label" for="f-tag" data-i18n="tbl.type">Type</label>
           <select id="f-tag" class="select">
-            <option value="all">Tous</option>
+            <option value="all" data-i18n="common.all">Tous</option>
           </select>
         </div>
         <div class="filter-group toggles">
-          <label class="switch"><input type="checkbox" id="f-online"><span class="track"></span>En ligne uniquement</label>
-          <label class="switch"><input type="checkbox" id="f-abandoned"><span class="track"></span>Exclure abandons</label>
+          <label class="switch"><input type="checkbox" id="f-online"><span class="track"></span><span data-i18n="ui.onlineOnly">En ligne uniquement</span></label>
+          <label class="switch"><input type="checkbox" id="f-abandoned"><span class="track"></span><span data-i18n="ui.excludeAbandoned">Exclure abandons</span></label>
         </div>
         <div class="filter-count" id="filter-count"></div>
       </section>
 
       <div id="no-results" class="no-results" hidden>
-        <p><strong>Aucun match ne correspond à ces filtres.</strong></p>
-        <p class="muted">Élargissez la période ou le mode pour voir vos statistiques.</p>
+        <p><strong data-i18n="hist.noMatchTitle">Aucun match ne correspond à ces filtres.</strong></p>
+        <p class="muted" data-i18n="ui.noResultsText">Élargissez la période ou le mode pour voir vos statistiques.</p>
       </div>
 
       <div id="content">
         <!-- KPIs -->
         <section class="section" aria-labelledby="h-kpi">
-          <h2 id="h-kpi" class="sr-only">Indicateurs clés</h2>
+          <h2 id="h-kpi" class="sr-only" data-i18n="ui.kpis">Indicateurs clés</h2>
           <div class="kpi-grid" id="kpis"></div>
         </section>
 
         <!-- Progression -->
         <section class="section" aria-labelledby="h-prog">
           <div class="section-head">
-            <h2 id="h-prog">Progression</h2>
-            <p class="section-sub">Moyennes glissantes sur les 20 derniers matchs</p>
+            <h2 id="h-prog" data-i18n="ui.progTitle">Progression</h2>
+            <p class="section-sub" data-i18n="ui.progSub">Moyennes glissantes sur les 20 derniers matchs</p>
           </div>
           <div class="grid grid-2">
-            <figure class="card chart-card"><figcaption><span class="card-title">% de victoire</span><span class="card-meta" id="m-roll-wr"></span></figcaption><div class="chart-box"><canvas id="c-roll-wr"></canvas></div></figure>
-            <figure class="card chart-card"><figcaption><span class="card-title">Différence de buts</span><span class="card-meta" id="m-roll-gd"></span></figcaption><div class="chart-box"><canvas id="c-roll-gd"></canvas></div></figure>
-            <figure class="card chart-card"><figcaption><span class="card-title">Score moyen</span><span class="card-meta" id="m-roll-score"></span></figcaption><div class="chart-box"><canvas id="c-roll-score"></canvas></div></figure>
-            <figure class="card chart-card"><figcaption><span class="card-title">Stats par match</span><span class="card-meta">vos buts, passes, arrêts et tirs</span></figcaption>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="kpi.winrate">% de victoire</span><span class="card-meta" id="m-roll-wr"></span></figcaption><div class="chart-box"><canvas id="c-roll-wr"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.goalDiffTitle">Différence de buts</span><span class="card-meta" id="m-roll-gd"></span></figcaption><div class="chart-box"><canvas id="c-roll-gd"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="kpi.avgScore">Score moyen</span><span class="card-meta" id="m-roll-score"></span></figcaption><div class="chart-box"><canvas id="c-roll-score"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.perMatchTitle">Stats par match</span><span class="card-meta" data-i18n="ui.perMatchSub">buts, passes, arrêts et tirs</span></figcaption>
               <div class="mini-grid">
-                <div class="mini"><div class="mini-head"><span>Buts</span><b id="mv-goals"></b></div><div class="mini-box"><canvas id="c-roll-goals"></canvas></div></div>
-                <div class="mini"><div class="mini-head"><span>Passes</span><b id="mv-assists"></b></div><div class="mini-box"><canvas id="c-roll-assists"></canvas></div></div>
-                <div class="mini"><div class="mini-head"><span>Arrêts</span><b id="mv-saves"></b></div><div class="mini-box"><canvas id="c-roll-saves"></canvas></div></div>
-                <div class="mini"><div class="mini-head"><span>Tirs</span><b id="mv-shots"></b></div><div class="mini-box"><canvas id="c-roll-shots"></canvas></div></div>
+                <div class="mini"><div class="mini-head"><span data-i18n="perf.goals">Buts</span><b id="mv-goals"></b></div><div class="mini-box"><canvas id="c-roll-goals"></canvas></div></div>
+                <div class="mini"><div class="mini-head"><span data-i18n="perf.assists">Passes</span><b id="mv-assists"></b></div><div class="mini-box"><canvas id="c-roll-assists"></canvas></div></div>
+                <div class="mini"><div class="mini-head"><span data-i18n="perf.saves">Arrêts</span><b id="mv-saves"></b></div><div class="mini-box"><canvas id="c-roll-saves"></canvas></div></div>
+                <div class="mini"><div class="mini-head"><span data-i18n="perf.shots">Tirs</span><b id="mv-shots"></b></div><div class="mini-box"><canvas id="c-roll-shots"></canvas></div></div>
               </div></figure>
           </div>
         </section>
@@ -152,32 +168,32 @@
         <!-- Activity -->
         <section class="section" aria-labelledby="h-act">
           <div class="section-head">
-            <h2 id="h-act">Activité</h2>
-            <p class="section-sub" id="act-sub">Matchs joués et % de victoire par jour</p>
+            <h2 id="h-act" data-i18n="ui.actTitle">Activité</h2>
+            <p class="section-sub" id="act-sub" data-i18n="act.subDay">Matchs joués et % de victoire par jour</p>
           </div>
           <div class="grid grid-activity">
-            <figure class="card chart-card"><figcaption><span class="card-title">Matchs joués</span><span class="legend" id="lg-act"></span></figcaption><div class="chart-box"><canvas id="c-activity"></canvas></div></figure>
-            <figure class="card chart-card"><figcaption><span class="card-title">% de victoire</span><span class="card-meta">jours avec ≥ 1 match décidé</span></figcaption><div class="chart-box"><canvas id="c-activity-wr"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.matchesPlayed">Matchs joués</span><span class="legend" id="lg-act"></span></figcaption><div class="chart-box"><canvas id="c-activity"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="kpi.winrate">% de victoire</span><span class="card-meta" data-i18n="ui.daysDecided">jours avec ≥ 1 match décidé</span></figcaption><div class="chart-box"><canvas id="c-activity-wr"></canvas></div></figure>
           </div>
         </section>
 
         <!-- Goal diff + per minute -->
         <section class="section" aria-labelledby="h-goals">
           <div class="section-head">
-            <h2 id="h-goals">Buts</h2>
-            <p class="section-sub">Écarts au score final et moments où les buts tombent</p>
+            <h2 id="h-goals" data-i18n="perf.goals">Buts</h2>
+            <p class="section-sub" data-i18n="ui.goalsSub">Écarts au score final et moments où les buts tombent</p>
           </div>
           <div class="grid grid-2">
-            <figure class="card chart-card"><figcaption><span class="card-title">Distribution des écarts de buts</span><span class="card-meta" id="m-gd"></span></figcaption><div class="chart-box"><canvas id="c-gd"></canvas></div></figure>
-            <figure class="card chart-card"><figcaption><span class="card-title">Buts par minute de jeu</span><span class="legend" id="lg-gpm"></span></figcaption><div class="chart-box"><canvas id="c-gpm"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.gdDist">Distribution des écarts de buts</span><span class="card-meta" id="m-gd"></span></figcaption><div class="chart-box"><canvas id="c-gd"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.goalsPerMinute">Buts par minute de jeu</span><span class="legend" id="lg-gpm"></span></figcaption><div class="chart-box"><canvas id="c-gpm"></canvas></div></figure>
           </div>
         </section>
 
         <!-- Situations -->
         <section class="section" aria-labelledby="h-sit">
           <div class="section-head">
-            <h2 id="h-sit">Situations</h2>
-            <p class="section-sub">Comment vous finissez les matchs selon leur scénario</p>
+            <h2 id="h-sit" data-i18n="ui.sitTitle">Situations</h2>
+            <p class="section-sub" data-i18n="ui.sitSub">Comment vous finissez les matchs selon leur scénario</p>
           </div>
           <div class="sit-grid" id="situations"></div>
         </section>
@@ -185,39 +201,39 @@
         <!-- Mental -->
         <section class="section" aria-labelledby="h-mental">
           <div class="section-head">
-            <h2 id="h-mental">Mental</h2>
-            <p class="section-sub">Une session = des matchs espacés de moins de 30&nbsp;min</p>
+            <h2 id="h-mental" data-i18n="ui.mentalTitle">Mental</h2>
+            <p class="section-sub" data-i18n-html="ui.mentalSub">Une session = des matchs espacés de moins de 30&nbsp;min</p>
           </div>
           <div class="grid grid-mental">
             <div class="card tilt-card" id="tilt"></div>
-            <figure class="card chart-card"><figcaption><span class="card-title">% de victoire selon le n° du match dans la session</span><span class="card-meta" id="m-sess"></span></figcaption><div class="chart-box"><canvas id="c-session"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.wrBySessionNo">% de victoire selon le n° du match dans la session</span><span class="card-meta" id="m-sess"></span></figcaption><div class="chart-box"><canvas id="c-session"></canvas></div></figure>
           </div>
         </section>
 
         <!-- Days & hours -->
         <section class="section" aria-labelledby="h-time">
           <div class="section-head">
-            <h2 id="h-time">Jours &amp; horaires</h2>
-            <p class="section-sub">Quand gagnez-vous le plus&nbsp;? Heure locale de début de match</p>
+            <h2 id="h-time" data-i18n-html="ui.timeTitle">Jours &amp; horaires</h2>
+            <p class="section-sub" data-i18n-html="ui.timeSub">Quand gagnez-vous le plus&nbsp;? Heure locale de début de match</p>
           </div>
           <p class="time-summary" id="time-summary"></p>
           <div class="time-tiles" id="time-tiles"></div>
           <figure class="card chart-card mt">
-            <figcaption><span class="card-title">% de victoire par jour et par heure</span><span class="card-meta" id="m-busy"></span></figcaption>
-            <div class="hm-legend" aria-hidden="true"><span class="hm-scale"><span>Plus de défaites</span><i class="hm-ramp"></i><span>Plus de victoires</span></span><span class="muted">· le chiffre = nombre de matchs · case pâle : moins de 3 matchs</span></div>
-            <div class="hm-scroll"><div class="heatmap" id="time-heatmap" role="img" aria-label="Pourcentage de victoire par jour de la semaine et par heure"></div></div>
+            <figcaption><span class="card-title" data-i18n="ui.wrDayHour">% de victoire par jour et par heure</span><span class="card-meta" id="m-busy"></span></figcaption>
+            <div class="hm-legend" aria-hidden="true"><span class="hm-scale"><span data-i18n="ui.moreLosses">Plus de défaites</span><i class="hm-ramp"></i><span data-i18n="ui.moreWins">Plus de victoires</span></span><span class="muted" data-i18n="ui.hmNote">· le chiffre = nombre de matchs · case pâle : moins de 3 matchs</span></div>
+            <div class="hm-scroll"><div class="heatmap" id="time-heatmap" role="img" data-i18n-attr="aria-label:ui.hmAria"></div></div>
           </figure>
           <div class="grid grid-2 mt">
-            <figure class="card chart-card"><figcaption><span class="card-title">% de victoire par jour de la semaine</span></figcaption><div class="chart-box"><canvas id="c-weekday"></canvas></div></figure>
-            <figure class="card chart-card"><figcaption><span class="card-title">% de victoire par heure</span><span class="card-meta">heure locale</span></figcaption><div class="chart-box"><canvas id="c-hour"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.wrWeekday">% de victoire par jour de la semaine</span></figcaption><div class="chart-box"><canvas id="c-weekday"></canvas></div></figure>
+            <figure class="card chart-card"><figcaption><span class="card-title" data-i18n="ui.wrHour">% de victoire par heure</span><span class="card-meta" data-i18n="ui.localTime">heure locale</span></figcaption><div class="chart-box"><canvas id="c-hour"></canvas></div></figure>
           </div>
         </section>
 
         <!-- Mechanics -->
         <section class="section" aria-labelledby="h-mech">
           <div class="section-head">
-            <h2 id="h-mech">Mécanique &amp; mouvement</h2>
-            <p class="section-sub" id="mech-sub">Moyennes sur la sélection · courbe = tendance glissante 20 matchs</p>
+            <h2 id="h-mech" data-i18n-html="ui.mechTitle">Mécanique &amp; mouvement</h2>
+            <p class="section-sub" id="mech-sub"></p>
           </div>
           <div class="mech-grid" id="mechanics"></div>
           <div class="card split-card" id="split"></div>
@@ -227,11 +243,11 @@
         <section class="section" aria-labelledby="h-feed">
           <div class="grid grid-2">
             <div>
-              <div class="section-head"><h2 id="h-feed">Actions favorites</h2><p class="section-sub">Événements du fil de stats (hors buts, passes, arrêts, tirs)</p></div>
+              <div class="section-head"><h2 id="h-feed" data-i18n="ui.feedTitle">Actions favorites</h2><p class="section-sub" data-i18n="ui.feedSub">Événements du fil de stats (hors buts, passes, arrêts, tirs)</p></div>
               <figure class="card chart-card"><div class="chart-box chart-box-auto" id="feed-box"><canvas id="c-feed"></canvas></div></figure>
             </div>
             <div>
-              <div class="section-head"><h2>Arènes</h2><p class="section-sub">Résultats par terrain</p></div>
+              <div class="section-head"><h2 data-i18n="ui.arenasTitle">Arènes</h2><p class="section-sub" data-i18n="ui.arenasSub">Résultats par terrain</p></div>
               <div class="card table-card"><div class="table-scroll"><table class="data-table" id="t-arenas"></table></div></div>
             </div>
           </div>
@@ -240,8 +256,8 @@
         <!-- Teammates -->
         <section class="section" aria-labelledby="h-mates">
           <div class="section-head">
-            <h2 id="h-mates">Coéquipiers fréquents</h2>
-            <p class="section-sub">Au moins 3 matchs ensemble</p>
+            <h2 id="h-mates" data-i18n="ui.matesTitle">Coéquipiers fréquents</h2>
+            <p class="section-sub" data-i18n="ui.matesSub">Au moins 3 matchs ensemble</p>
           </div>
           <div class="card table-card"><div class="table-scroll"><table class="data-table" id="t-mates"></table></div></div>
         </section>
@@ -250,129 +266,191 @@
       <!-- Recent matches (independent of "no results" but follows filters) -->
       <section class="section" aria-labelledby="h-recent" id="recent-section">
         <div class="section-head">
-          <h2 id="h-recent">Derniers matchs</h2>
-          <p class="section-sub">Cliquez sur une ligne pour le détail · <a href="#/historique">Voir tout l’historique <span aria-hidden="true">→</span></a></p>
+          <h2 id="h-recent" data-i18n="ui.recentTitle">Derniers matchs</h2>
+          <p class="section-sub"><span data-i18n="ui.recentSub">Cliquez sur une ligne pour le détail</span> · <a href="#/history" id="recent-all"><span data-i18n="ui.seeHistory">Voir tout l’historique</span> <span aria-hidden="true">→</span></a></p>
         </div>
         <div class="card table-card">
           <div class="table-scroll"><table class="data-table matches-table" id="t-matches"></table></div>
-          <div class="table-foot"><button type="button" class="btn btn-ghost" id="more-matches" hidden>Afficher plus</button></div>
+          <div class="table-foot"><button type="button" class="btn btn-ghost" id="more-matches" hidden data-i18n="common.showMore">Afficher plus</button></div>
         </div>
       </section>
     </div>
 
-    <!-- History (#/historique) -->
+    <!-- History (#/history) -->
     <div id="view-history" hidden>
       <div class="page-head">
-        <h1 id="h-history" tabindex="-1">Historique</h1>
-        <p class="section-sub">Tous vos matchs, jour par jour · cliquez sur un match pour le détail</p>
+        <h1 id="h-history" tabindex="-1" data-i18n="nav.history">Historique</h1>
+        <p class="section-sub" data-i18n="ui.histSub">Tous les matchs, jour par jour · cliquez sur un match pour le détail</p>
       </div>
-      <section class="filters hist-filters" aria-label="Filtres de l’historique">
+      <section class="filters hist-filters" data-i18n-attr="aria-label:ui.histFilters">
         <div class="filter-group">
-          <span class="filter-label">Mode</span>
-          <div class="seg" id="h-mode" role="radiogroup" aria-label="Mode">
-            <button type="button" data-v="all">Tous</button>
+          <span class="filter-label" data-i18n="tbl.mode">Mode</span>
+          <div class="seg" id="h-mode" role="radiogroup" data-i18n-attr="aria-label:tbl.mode">
+            <button type="button" data-v="all" data-i18n="common.all">Tous</button>
             <button type="button" data-v="1v1">1v1</button>
             <button type="button" data-v="2v2">2v2</button>
             <button type="button" data-v="3v3">3v3</button>
-            <button type="button" data-v="other">Autres</button>
+            <button type="button" data-v="other" data-i18n="common.other">Autres</button>
           </div>
         </div>
         <div class="filter-group">
-          <span class="filter-label">Résultat</span>
-          <div class="seg" id="h-result" role="radiogroup" aria-label="Résultat">
-            <button type="button" data-v="all">Tous</button>
-            <button type="button" data-v="win">Victoires</button>
-            <button type="button" data-v="loss">Défaites</button>
-            <button type="button" data-v="abandoned">Abandons</button>
+          <span class="filter-label" data-i18n="ui.result">Résultat</span>
+          <div class="seg" id="h-result" role="radiogroup" data-i18n-attr="aria-label:ui.result">
+            <button type="button" data-v="all" data-i18n="common.all">Tous</button>
+            <button type="button" data-v="win" data-i18n="act.wins">Victoires</button>
+            <button type="button" data-v="loss" data-i18n="act.losses">Défaites</button>
+            <button type="button" data-v="abandoned" data-i18n="act.abandons">Abandons</button>
           </div>
         </div>
         <div class="filter-group">
-          <span class="filter-label">Période</span>
-          <div class="seg" id="h-period" role="radiogroup" aria-label="Période">
-            <button type="button" data-v="7">7j</button>
-            <button type="button" data-v="30">30j</button>
-            <button type="button" data-v="90">90j</button>
-            <button type="button" data-v="all">Tout</button>
+          <span class="filter-label" data-i18n="ui.period">Période</span>
+          <div class="seg" id="h-period" role="radiogroup" data-i18n-attr="aria-label:ui.period">
+            <button type="button" data-v="7" data-i18n="ui.d7">7j</button>
+            <button type="button" data-v="30" data-i18n="ui.d30">30j</button>
+            <button type="button" data-v="90" data-i18n="ui.d90">90j</button>
+            <button type="button" data-v="all" data-i18n="ui.allTime">Tout</button>
           </div>
         </div>
         <div class="filter-group">
-          <label class="filter-label" for="h-tag">Type</label>
-          <select id="h-tag" class="select"><option value="all">Tous</option></select>
+          <label class="filter-label" for="h-tag" data-i18n="tbl.type">Type</label>
+          <select id="h-tag" class="select"><option value="all" data-i18n="common.all">Tous</option></select>
         </div>
         <div class="filter-group hist-search">
-          <label class="sr-only" for="h-q">Rechercher un joueur ou une arène</label>
-          <input type="search" id="h-q" class="input-search" placeholder="Joueur ou arène…" autocomplete="off" spellcheck="false">
+          <label class="sr-only" for="h-q" data-i18n="ui.histSearchLabel">Rechercher un joueur ou une arène</label>
+          <input type="search" id="h-q" class="input-search" data-i18n-attr="placeholder:ui.histSearch" autocomplete="off" spellcheck="false">
         </div>
         <div class="filter-group toggles">
-          <label class="switch"><input type="checkbox" id="h-offline"><span class="track"></span>Inclure hors ligne</label>
+          <label class="switch"><input type="checkbox" id="h-offline"><span class="track"></span><span data-i18n="ui.includeOffline">Inclure hors ligne</span></label>
         </div>
       </section>
       <p class="hist-summary" id="hist-summary" aria-live="polite"></p>
       <div id="hist-list" class="hist-list"></div>
-      <div class="hist-more-wrap"><button type="button" class="btn" id="hist-more" hidden>Afficher plus</button></div>
+      <div class="hist-more-wrap"><button type="button" class="btn" id="hist-more" hidden data-i18n="common.showMore">Afficher plus</button></div>
     </div>
 
     <!-- Match page (#/match/<id>) -->
     <div id="view-match" hidden></div>
 
+    <!-- Players & leaderboard (#/players, server mode) -->
+    <div id="view-players" hidden>
+      <div class="page-head">
+        <h1 id="h-players" tabindex="-1" data-i18n="nav.players">Joueurs</h1>
+        <p class="section-sub" id="players-count"></p>
+      </div>
+      <section class="filters" data-i18n-attr="aria-label:ui.playersSearch">
+        <div class="filter-group hist-search players-search">
+          <label class="sr-only" for="p-q" data-i18n="ui.playersSearch">Rechercher un joueur</label>
+          <input type="search" id="p-q" class="input-search" data-i18n-attr="placeholder:ui.playersSearchPh" autocomplete="off" spellcheck="false">
+        </div>
+      </section>
+      <div id="players-list" class="players-grid"></div>
+
+      <section class="section" aria-labelledby="h-lb">
+        <div class="section-head">
+          <h2 id="h-lb" data-i18n="ui.lbTitle">Classement</h2>
+          <p class="section-sub" data-i18n="ui.lbSub">Matchs en ligne terminés (abandons exclus) · cliquez sur une colonne pour trier</p>
+        </div>
+        <section class="filters" data-i18n-attr="aria-label:ui.lbFilters">
+          <div class="filter-group">
+            <span class="filter-label" data-i18n="tbl.mode">Mode</span>
+            <div class="seg" id="lb-mode" role="radiogroup" data-i18n-attr="aria-label:tbl.mode">
+              <button type="button" data-v="all" data-i18n="common.all">Tous</button>
+              <button type="button" data-v="1v1">1v1</button>
+              <button type="button" data-v="2v2">2v2</button>
+              <button type="button" data-v="3v3">3v3</button>
+              <button type="button" data-v="other" data-i18n="common.other">Autres</button>
+            </div>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label" data-i18n="ui.period">Période</span>
+            <div class="seg" id="lb-period" role="radiogroup" data-i18n-attr="aria-label:ui.period">
+              <button type="button" data-v="7" data-i18n="ui.d7">7j</button>
+              <button type="button" data-v="30" data-i18n="ui.d30">30j</button>
+              <button type="button" data-v="90" data-i18n="ui.d90">90j</button>
+              <button type="button" data-v="all" data-i18n="ui.allTime">Tout</button>
+            </div>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" for="lb-tag" data-i18n="tbl.type">Type</label>
+            <select id="lb-tag" class="select"></select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" for="lb-min" data-i18n="ui.minimum">Minimum</label>
+            <select id="lb-min" class="select">
+              <option value="1" data-i18n="ui.min1">1 match</option><option value="5" data-i18n="ui.min5">5 matchs</option><option value="10" data-i18n="ui.min10">10 matchs</option>
+              <option value="20" data-i18n="ui.min20">20 matchs</option><option value="50" data-i18n="ui.min50">50 matchs</option>
+            </select>
+          </div>
+        </section>
+        <div class="card table-card"><div class="table-scroll"><table class="data-table lb-table" id="t-leaders"></table></div></div>
+        <p class="muted small lb-note" id="lb-note"></p>
+      </section>
+    </div>
+
     <footer class="footer">
       <span id="footer-version">Rocket Tracker</span>
-      <span>Données locales · rien ne quitte votre PC</span>
+      <span id="footer-note" data-i18n="footer.local">Données locales · rien ne quitte votre PC</span>
     </footer>
   </main>
 
   <dialog id="settings" class="modal">
     <form method="dialog" id="settings-form">
       <header class="modal-head">
-        <h2>Réglages</h2>
-        <button type="button" class="icon-btn" data-close aria-label="Fermer">×</button>
+        <h2 data-i18n="ui.settings">Réglages</h2>
+        <button type="button" class="icon-btn" data-close data-i18n-attr="aria-label:common.close">×</button>
       </header>
       <div class="modal-body">
         <label class="field">
-          <span>Pseudo(s) en jeu</span>
-          <input type="text" name="player_names" placeholder="ex. Virgile, Virgile_alt" autocomplete="off">
-          <small>Séparés par des virgules. Laisser vide pour la détection automatique.</small>
+          <span data-i18n="set.lang">Langue</span>
+          <select name="lang" class="select">
+            <option value="fr">Français</option><option value="en">English</option>
+          </select>
         </label>
         <label class="field">
-          <span>Identifiant(s) de plateforme</span>
-          <input type="text" name="player_ids" placeholder="ex. Epic|abc123|0" autocomplete="off">
-          <small>Prioritaires sur les pseudos. Format <code>Plateforme|Uid|Écran</code>.</small>
+          <span data-i18n="set.names">Pseudo(s) en jeu</span>
+          <input type="text" name="player_names" data-i18n-attr="placeholder:set.namesPh" autocomplete="off">
+          <small data-i18n="set.namesHelp">Séparés par des virgules. Laisser vide pour la détection automatique.</small>
         </label>
         <label class="field">
-          <span>Type de match par défaut</span>
+          <span data-i18n="set.ids">Identifiant(s) de plateforme</span>
+          <input type="text" name="player_ids" placeholder="Epic|abc123|0" autocomplete="off">
+          <small data-i18n-html="set.idsHelp">Prioritaires sur les pseudos. Format <code>Plateforme|Uid|Écran</code>.</small>
+        </label>
+        <label class="field">
+          <span data-i18n="set.defaultTag">Type de match par défaut</span>
           <select name="default_tag" class="select"></select>
-          <small>Appliqué aux nouveaux matchs (l’API ne distingue pas classé / occasionnel).</small>
+          <small data-i18n="set.defaultTagHelp">Appliqué aux nouveaux matchs (l’API ne distingue pas classé / occasionnel).</small>
         </label>
         <fieldset class="field-group">
-          <legend>Objectif saison</legend>
+          <legend data-i18n="ui.goalTitle">Objectif saison</legend>
           <div class="field-row">
             <label class="field">
-              <span>Mode</span>
+              <span data-i18n="tbl.mode">Mode</span>
               <select name="goal_mode" class="select">
                 <option value="1v1">1v1</option><option value="2v2">2v2</option><option value="3v3">3v3</option>
-                <option value="4v4">4v4</option><option value="all">Tous modes</option>
+                <option value="4v4">4v4</option><option value="all" data-i18n="set.allModes">Tous modes</option>
               </select>
             </label>
             <label class="field">
-              <span>Games par jour</span>
+              <span data-i18n="set.gamesPerDay">Games par jour</span>
               <input type="number" name="goal_daily" min="1" max="200" step="1" inputmode="numeric">
             </label>
           </div>
           <div class="field-row">
-            <label class="field"><span>Début de saison</span><input type="date" name="goal_start"></label>
-            <label class="field"><span>Fin de saison</span><input type="date" name="goal_end"></label>
+            <label class="field"><span data-i18n="set.seasonStart">Début de saison</span><input type="date" name="goal_start"></label>
+            <label class="field"><span data-i18n="set.seasonEnd">Fin de saison</span><input type="date" name="goal_end"></label>
           </div>
-          <small>Vide&nbsp;: la saison commence à votre première game du mode et dure 100 jours.</small>
+          <small data-i18n-html="set.seasonHelp">Vide&nbsp;: la saison commence à votre première game du mode et dure 100 jours.</small>
         </fieldset>
-        <label class="field">
-          <span>Dossier d’installation de Rocket League</span>
-          <input type="text" name="rl_install_dir" placeholder="Détection automatique" autocomplete="off">
+        <label class="field local-only">
+          <span data-i18n="set.rlDir">Dossier d’installation de Rocket League</span>
+          <input type="text" name="rl_install_dir" data-i18n-attr="placeholder:set.rlDirPh" autocomplete="off">
         </label>
         <p class="form-msg" id="settings-msg" role="status"></p>
       </div>
       <footer class="modal-foot">
-        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
-        <button type="submit" class="btn btn-primary" id="settings-save">Enregistrer</button>
+        <button type="button" class="btn btn-ghost" data-close data-i18n="common.cancel">Annuler</button>
+        <button type="submit" class="btn btn-primary" id="settings-save" data-i18n="common.save">Enregistrer</button>
       </footer>
     </form>
   </dialog>
@@ -380,27 +458,51 @@
   <dialog id="day-dialog" class="modal">
     <form method="dialog" id="day-form">
       <header class="modal-head">
-        <h2 id="day-title">Jour</h2>
-        <button type="button" class="icon-btn" data-close aria-label="Fermer">×</button>
+        <h2 id="day-title"></h2>
+        <button type="button" class="icon-btn" data-close data-i18n-attr="aria-label:common.close">×</button>
       </header>
       <div class="modal-body">
-        <p class="muted small">Ajoutez les games jouées sans le tracker (avant son installation, PC éteint…). Elles s’ajoutent aux games suivies automatiquement et comptent dans l’objectif saison. Mettez 0 pour effacer.</p>
+        <p class="muted small" data-i18n="day.help">Ajoutez les games jouées sans le tracker (avant son installation, PC éteint…). Elles s’ajoutent aux games suivies automatiquement et comptent dans l’objectif saison. Mettez 0 pour effacer.</p>
         <table class="day-table">
-          <thead><tr><th>Mode</th><th class="r">Suivies</th><th>Games ajoutées</th><th>Dont victoires</th></tr></thead>
+          <thead><tr><th data-i18n="tbl.mode">Mode</th><th class="r" data-i18n="day.tracked">Suivies</th><th data-i18n="day.added">Games ajoutées</th><th data-i18n="day.ofWhichWins">Dont victoires</th></tr></thead>
           <tbody id="day-rows"></tbody>
         </table>
         <p class="form-msg" id="day-msg" role="status"></p>
       </div>
       <footer class="modal-foot">
-        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
-        <button type="submit" class="btn btn-primary">Enregistrer</button>
+        <button type="button" class="btn btn-ghost" data-close data-i18n="common.cancel">Annuler</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Enregistrer</button>
       </footer>
+    </form>
+  </dialog>
+
+  <dialog id="devices" class="modal modal-wide">
+    <form method="dialog" id="devices-form">
+      <header class="modal-head">
+        <h2 data-i18n="ui.devices">Appareils</h2>
+        <button type="button" class="icon-btn" data-close data-i18n-attr="aria-label:common.close">×</button>
+      </header>
+      <div class="modal-body">
+        <p class="muted small" data-i18n="dev.help">Chaque PC de jeu fait tourner l’agent Rocket Tracker, qui suit vos parties et les envoie à ce serveur avec son propre jeton. Révoquer un appareil coupe son accès sans toucher à vos matchs.</p>
+        <div id="devices-list"></div>
+        <div class="dev-create">
+          <label class="field"><span data-i18n="dev.new">Nouvel appareil</span><input type="text" name="name" data-i18n-attr="placeholder:dev.namePh" maxlength="60" autocomplete="off"></label>
+          <button type="submit" class="btn btn-primary" data-i18n="dev.create">Créer un jeton</button>
+        </div>
+        <div id="device-new" class="dev-new" hidden>
+          <p id="device-new-text"></p>
+          <div class="cmd-box"><code id="device-cmd"></code><button type="button" class="btn btn-ghost" id="device-copy" data-i18n="dev.copy">Copier</button></div>
+          <p class="muted small" data-i18n-html="dev.after">Elle active l’API Stats de Rocket League, enregistre l’agent au démarrage de Windows et le lance. Pour envoyer aussi vos anciens matchs enregistrés localement&nbsp;: <code>rltracker agent import</code>.</p>
+        </div>
+        <p class="form-msg" id="devices-msg" role="status"></p>
+      </div>
     </form>
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="vendor/chart.umd.min.js"></script>
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

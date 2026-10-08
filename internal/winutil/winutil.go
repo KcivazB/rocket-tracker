@@ -235,3 +235,12 @@ func SingleInstance(name string) (release func(), ok bool, err error) {
 	}
 	return func() { windows.CloseHandle(h) }, true, nil
 }
+
+var procGetUserDefaultUILanguage = kernel32.NewProc("GetUserDefaultUILanguage")
+
+// UILanguageIsFrench reports whether the Windows display language is French
+// (any region): primary language id LANG_FRENCH = 0x0c.
+func UILanguageIsFrench() bool {
+	r, _, _ := procGetUserDefaultUILanguage.Call()
+	return r&0x3ff == 0x0c
+}

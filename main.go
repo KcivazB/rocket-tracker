@@ -20,7 +20,9 @@ import (
 	"syscall"
 	"time"
 
+	"rocket-tracker/internal/agent"
 	"rocket-tracker/internal/config"
+	"rocket-tracker/internal/i18n"
 	"rocket-tracker/internal/logging"
 	"rocket-tracker/internal/server"
 	"rocket-tracker/internal/setup"
@@ -33,7 +35,7 @@ import (
 )
 
 // Version is the application version (overridable with -ldflags -X main.Version=...).
-var Version = "0.3.0"
+var Version = "0.4.0"
 
 type globals struct {
 	dataDir string
@@ -70,6 +72,9 @@ Usage: rltracker [command] [flags]
 Commands:
   run         (default) track matches and serve the dashboard
   setup       enable the Stats API in the game ini, register autostart, open the dashboard
+  agent       track matches and send them to a Rocket Tracker server (instead of run)
+  agent setup --server URL --token TOKEN   connect this PC to the server, enable the Stats API, autostart the agent
+  agent import [--db PATH]                 upload the matches of the local database to the server
   uninstall   remove autostart
   open        open the dashboard in the browser
   simulate    fake Stats API server   [--port 49123] [--mode ws|tcp] [--matches N] [--speed X]
@@ -79,8 +84,17 @@ Commands:
 Global flags: --data-dir DIR  --port 8765  --rl-port 49123  --debug
 `
 
+// lang is the language of the messages shown to the player: $RT_LANG, else
+// the Windows display language (French or English).
+var lang = i18n.EN
+
 func main() {
 	console := winutil.AttachParentConsole()
+	if l, ok := i18n.FromEnv(); ok {
+		lang = l
+	} else if winutil.UILanguageIsFrench() {
+		lang = i18n.FR
+	}
 	args := os.Args[1:]
 	cmd := "run"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -92,6 +106,8 @@ func main() {
 		err = cmdRun(args, console)
 	case "setup":
 		err = cmdSetup(args, console)
+	case "agent":
+		err = cmdAgent(args, console)
 	case "uninstall":
 		err = cmdUninstall(args, console)
 	case "open":
@@ -115,7 +131,7 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		if !console && cmd != "run" {
-			winutil.MessageBox("Rocket Tracker", "Erreur : "+err.Error(), true)
+			winutil.MessageBox("Rocket Tracker", i18n.Tf(lang, "error.box", err.Error()), true)
 		}
 		os.Exit(1)
 	}
@@ -147,20 +163,11 @@ func cmdRun(args []string, console bool) error {
 		return err
 	}
 
-	logFile, err := logging.OpenRotating(filepath.Join(dataDir, "rltracker.log"), logging.DefaultMaxSize, 2)
+	log, logFile, err := openLog(dataDir, "rltracker.log", g.debug, console)
 	if err != nil {
-		return fmt.Errorf("open log: %w", err)
+		return err
 	}
 	defer logFile.Close()
-	level := slog.LevelInfo
-	if g.debug {
-		level = slog.LevelDebug
-	}
-	var stderr io.Writer
-	if console {
-		stderr = os.Stderr
-	}
-	log := logging.New(level, logFile, stderr)
 
 	release, ok, err := winutil.SingleInstance("RocketTracker-" + shortHash(dataDir))
 	if err != nil {
@@ -216,51 +223,14 @@ func cmdRun(args []string, console bool) error {
 		},
 	})
 
-	client := &statsapi.Client{
-		Port:         rlPort,
-		WebPort:      setup.DefaultWebPort,
-		Log:          log.With("component", "statsapi"),
-		OnEvent:      tr.HandleEvent,
-		OnDisconnect: tr.Disconnected,
-	}
-	if ini := setup.CheckIni(setup.FindInstallDir(cfg.RLInstallDir)); ini.Found {
-		log.Info("stats api ini", "path", ini.Path, "packet_send_rate", ini.PacketSendRate, "ok", ini.OK)
-		if ini.WebPort > 0 {
-			client.WebPort = ini.WebPort
-		}
-		if g.rlPort == 0 && ini.Port > 0 && ini.Port != rlPort {
-			log.Info("using Port from ini", "port", ini.Port)
-			client.Port = ini.Port
-		}
-	} else {
-		log.Warn("Stats API ini not found; run `rltracker setup`", "install_dir", ini.InstallDir)
-	}
+	client := gameClient(log, tr, cfg.RLInstallDir, rlPort, g.rlPort > 0)
 
 	srv := &server.Server{
 		Version: Version, Store: st, Config: cfgMgr, Tracker: tr, ConnStatus: client.Status,
 		Static: web.FS, Log: log.With("component", "http"),
 	}
 
-	clientDone := make(chan struct{})
-	go func() {
-		defer close(clientDone)
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("stats api client crashed", "panic", fmt.Sprint(r))
-			}
-		}()
-		client.Run(ctx)
-	}()
-	// On exit, wait for the client (its disconnect callback saves the current
-	// match) before flushing and closing the database.
-	waitClient := func() {
-		stop()
-		select {
-		case <-clientDone:
-		case <-time.After(5 * time.Second):
-			log.Warn("stats api client did not stop in time")
-		}
-	}
+	waitClient := runGameClient(ctx, stop, log, client)
 
 	log.Info("rocket tracker started", "version", Version, "data_dir", dataDir, "dashboard", fmt.Sprintf("http://localhost:%d", port), "rl_port", client.Port)
 	errc := make(chan error, 1)
@@ -280,6 +250,72 @@ func cmdRun(args []string, console bool) error {
 	tr.Flush()
 	log.Info("rocket tracker stopped")
 	return nil
+}
+
+// gameClient builds the Stats API client feeding tr. The ports written in the
+// game ini win over the configured ones, unless the port was forced by flag.
+func gameClient(log *slog.Logger, tr *tracker.Tracker, rlInstallDir string, rlPort int, portForced bool) *statsapi.Client {
+	client := &statsapi.Client{
+		Port:         rlPort,
+		WebPort:      setup.DefaultWebPort,
+		Log:          log.With("component", "statsapi"),
+		OnEvent:      tr.HandleEvent,
+		OnDisconnect: tr.Disconnected,
+	}
+	if ini := setup.CheckIni(setup.FindInstallDir(rlInstallDir)); ini.Found {
+		log.Info("stats api ini", "path", ini.Path, "packet_send_rate", ini.PacketSendRate, "ok", ini.OK)
+		if ini.WebPort > 0 {
+			client.WebPort = ini.WebPort
+		}
+		if !portForced && ini.Port > 0 && ini.Port != rlPort {
+			log.Info("using Port from ini", "port", ini.Port)
+			client.Port = ini.Port
+		}
+	} else {
+		log.Warn("Stats API ini not found; run `rltracker setup`", "install_dir", ini.InstallDir)
+	}
+	return client
+}
+
+// runGameClient runs the client in the background. The returned function
+// cancels the context and waits for the client to stop: its disconnect
+// callback saves the current match, so call it before flushing the tracker.
+func runGameClient(ctx context.Context, stop context.CancelFunc, log *slog.Logger, client *statsapi.Client) (wait func()) {
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("stats api client crashed", "panic", fmt.Sprint(r))
+			}
+		}()
+		client.Run(ctx)
+	}()
+	return func() {
+		stop()
+		select {
+		case <-clientDone:
+		case <-time.After(5 * time.Second):
+			log.Warn("stats api client did not stop in time")
+		}
+	}
+}
+
+// openLog opens the rotating log file of a command.
+func openLog(dataDir, name string, debug, console bool) (*slog.Logger, io.Closer, error) {
+	logFile, err := logging.OpenRotating(filepath.Join(dataDir, name), logging.DefaultMaxSize, 2)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open log: %w", err)
+	}
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	var stderr io.Writer
+	if console {
+		stderr = os.Stderr
+	}
+	return logging.New(level, logFile, stderr), logFile, nil
 }
 
 // ---------------------------------------------------------------- setup
@@ -320,6 +356,9 @@ func cmdSetup(args []string, console bool) error {
 		_, err := setup.EnableStatsAPI(*rlDir, *rate, rlPort, setup.DefaultWebPort)
 		return err
 	}
+	if err := checkRLDir(*rlDir); err != nil {
+		return err
+	}
 
 	rep := &setupReport{}
 	cfgMgr, err := config.Load(filepath.Join(dataDir, "config.json"))
@@ -331,18 +370,61 @@ func cmdSetup(args []string, console bool) error {
 	if override == "" {
 		override = cfg.RLInstallDir
 	}
+	enableStatsAPI(rep, override, *rate, rlPort, i18n.Tf(lang, "setup.dirHint", cfgMgr.Path()))
+
+	if !*noAutostart {
+		registerAutostart(rep, runArgs(dataDir, g))
+	}
+
+	port := cfg.DashboardPort
+	if g.port > 0 {
+		port = g.port
+	}
+	url := fmt.Sprintf("http://localhost:%d", port)
+	if !*noOpen {
+		if !dashboardUp(port) {
+			if err := startDetached(runArgs(dataDir, g)); err != nil {
+				rep.add(i18n.T(lang, "setup.startFailed"), err)
+			} else {
+				for i := 0; i < 20 && !dashboardUp(port); i++ {
+					time.Sleep(250 * time.Millisecond)
+				}
+			}
+		}
+		_ = winutil.OpenURL(url)
+	}
+	rep.add(i18n.T(lang, "setup.dashboard"), url)
+
+	if !console {
+		winutil.MessageBox(i18n.T(lang, "setup.title"), strings.Join(rep.lines, "\n"), rep.warn)
+	}
+	return nil
+}
+
+// checkRLDir rejects an explicit --rl-dir that is not a Rocket League
+// install (detection would otherwise silently patch another one).
+func checkRLDir(dir string) error {
+	if dir != "" && !setup.IsInstallDir(dir) {
+		return fmt.Errorf("--rl-dir %q is not a Rocket League install (expected Binaries\\Win64\\RocketLeague.exe or TAGame\\Config)", dir)
+	}
+	return nil
+}
+
+// enableStatsAPI finds Rocket League and turns the Stats API on in its ini
+// (asking for elevation when Program Files is not writable).
+func enableStatsAPI(rep *setupReport, override string, rate float64, rlPort int, dirHint string) {
 	dir := setup.FindInstallDir(override)
 	if dir == "" {
 		rep.warn = true
-		rep.add("Rocket League introuvable. Indiquez le dossier avec --rl-dir ou rl_install_dir dans %s", cfgMgr.Path())
+		rep.add(i18n.T(lang, "setup.notFound"), dirHint)
 	} else {
-		rep.add("Rocket League : %s", dir)
-		_, err := setup.EnableStatsAPI(dir, *rate, rlPort, setup.DefaultWebPort)
+		rep.add(i18n.T(lang, "setup.found"), dir)
+		_, err := setup.EnableStatsAPI(dir, rate, rlPort, setup.DefaultWebPort)
 		if err != nil && setup.IsPermission(err) && !winutil.IsElevated() {
-			rep.add("Droits administrateur requis pour modifier le fichier ini, demande d'élévation…")
+			rep.add("%s", i18n.T(lang, "setup.elevate"))
 			exe, _ := os.Executable()
 			code, eerr := winutil.RunElevated(exe, []string{"setup", "--ini-only", "--rl-dir", dir,
-				"--rate", strconv.FormatFloat(*rate, 'f', -1, 64), "--rl-port", strconv.Itoa(rlPort)})
+				"--rate", strconv.FormatFloat(rate, 'f', -1, 64), "--rl-port", strconv.Itoa(rlPort)})
 			switch {
 			case eerr != nil:
 				err = eerr
@@ -355,53 +437,30 @@ func cmdSetup(args []string, console bool) error {
 		st := setup.CheckIni(dir)
 		if err != nil {
 			rep.warn = true
-			rep.add("Échec de l'activation de la Stats API : %v", err)
+			rep.add(i18n.T(lang, "setup.enableFailed"), err)
 		} else if st.OK {
-			rep.add("Stats API activée : %s (PacketSendRate=%g, Port=%d)", st.Path, st.PacketSendRate, st.Port)
-			rep.add("→ Redémarrez Rocket League si le jeu est ouvert.")
+			rep.add(i18n.T(lang, "setup.enabled"), st.Path, st.PacketSendRate, st.Port)
+			rep.add("%s", i18n.T(lang, "setup.restart"))
 		} else {
 			rep.warn = true
-			rep.add("Le fichier ini a été écrit mais la vérification a échoué : %s", st.Path)
+			rep.add(i18n.T(lang, "setup.checkFailed"), st.Path)
 		}
 	}
+}
 
-	if !*noAutostart {
-		exe, err := os.Executable()
-		if err == nil {
-			command := commandLine(exe, runArgs(dataDir, g))
-			if err = winutil.SetAutostart(command); err == nil {
-				rep.add("Démarrage automatique enregistré (HKCU\\...\\Run\\%s)", winutil.AutostartName)
-			}
-		}
-		if err != nil {
-			rep.warn = true
-			rep.add("Démarrage automatique : échec (%v)", err)
+// registerAutostart starts this exe with args at Windows login (one entry:
+// the local tracker and the agent replace each other).
+func registerAutostart(rep *setupReport, args []string) {
+	exe, err := os.Executable()
+	if err == nil {
+		if err = winutil.SetAutostart(commandLine(exe, args)); err == nil {
+			rep.add(i18n.T(lang, "setup.autostart"), winutil.AutostartName)
 		}
 	}
-
-	port := cfg.DashboardPort
-	if g.port > 0 {
-		port = g.port
+	if err != nil {
+		rep.warn = true
+		rep.add(i18n.T(lang, "setup.autostartFailed"), err)
 	}
-	url := fmt.Sprintf("http://localhost:%d", port)
-	if !*noOpen {
-		if !dashboardUp(port) {
-			if err := startDetached(dataDir, g); err != nil {
-				rep.add("Impossible de lancer le tracker : %v", err)
-			} else {
-				for i := 0; i < 20 && !dashboardUp(port); i++ {
-					time.Sleep(250 * time.Millisecond)
-				}
-			}
-		}
-		_ = winutil.OpenURL(url)
-	}
-	rep.add("Tableau de bord : %s", url)
-
-	if !console {
-		winutil.MessageBox("Rocket Tracker — installation", strings.Join(rep.lines, "\n"), rep.warn)
-	}
-	return nil
 }
 
 func dashboardUp(port int) bool {
@@ -439,12 +498,13 @@ func commandLine(exe string, args []string) string {
 	return strings.Join(parts, " ")
 }
 
-func startDetached(dataDir string, g globals) error {
+// startDetached starts this exe with args in the background.
+func startDetached(args []string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, runArgs(dataDir, g)...)
+	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000008 | 0x00000200} // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 	if err := cmd.Start(); err != nil {
 		return err
@@ -464,7 +524,7 @@ func cmdUninstall(args []string, console bool) error {
 	if err := winutil.RemoveAutostart(); err != nil {
 		return err
 	}
-	msg := "Démarrage automatique supprimé. Les données sont conservées dans " + g.resolveDataDir()
+	msg := i18n.Tf(lang, "uninstall.done", g.resolveDataDir())
 	fmt.Println(msg)
 	if !console {
 		winutil.MessageBox("Rocket Tracker", msg, false)
@@ -478,6 +538,12 @@ func cmdOpen(args []string) error {
 	g.register(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if g.port <= 0 {
+		if cfg, err := agent.LoadConfig(agentConfigPath(g.resolveDataDir())); err == nil {
+			fmt.Println(cfg.Server)
+			return winutil.OpenURL(cfg.Server)
+		}
 	}
 	port := g.port
 	if port <= 0 {

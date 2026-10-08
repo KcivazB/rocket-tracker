@@ -17,6 +17,9 @@ The dashboard (`web/`) is embedded with `//go:embed *` (`web/embed.go`).
 |---|---|
 | `rltracker` / `rltracker run` | Tracker + dashboard on `http://localhost:8765`. Single instance per data dir (named mutex). Logs to file. |
 | `rltracker setup` | Finds Rocket League, enables the Stats API in the ini (`PacketSendRate=30`, `Port=49123`, `WebPort=49124`), asks for UAC elevation if Program Files is not writable, registers autostart (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\RocketTracker = "<exe>" run`), starts the tracker and opens the dashboard. Flags: `--rl-dir`, `--rate`, `--no-autostart`, `--no-open`. **Restart the game afterwards.** |
+| `rltracker agent` | Self-hosted mode: tracker without a dashboard; finished matches go to `outbox\` then to the server, a heartbeat (every 3 s) reports the live state and receives the player's settings (identity, default tag). Single instance per data dir. Logs to `agent.log`. Reloads `agent.json` when it changes. |
+| `rltracker agent setup --server URL --token TOKEN` | Checks the server with a heartbeat, writes `agent.json`, enables the Stats API (like `setup`), registers the agent as the autostart command (replacing `run`), starts it. Flags: `--rl-dir`, `--rate`, `--no-autostart`, `--no-open`. An explicit `--rl-dir` that is not a Rocket League install is an error. |
+| `rltracker agent import [--db PATH]` | Uploads the matches and manual games of a local database. Idempotent (key `import:<guid>:<start>`). |
 | `rltracker uninstall` | Removes the autostart value (data is kept). |
 | `rltracker open` | Opens the dashboard in the default browser. |
 | `rltracker simulate [--port 49123] [--mode ws\|tcp] [--matches N] [--speed X] [--kinds normal,forfeit,abandoned,offline] [--seed S]` | Fake Stats API server for end-to-end testing without the game. |
@@ -38,6 +41,32 @@ summary and errors are shown in a MessageBox.
   versioned with `PRAGMA user_version`.
 - `config.json` — `player_names`, `player_ids`, `default_tag`, `rl_install_dir`, `dashboard_port`, `rl_port`.
 - `rltracker.log` — rotated at 5 MB (`.1`, `.2` kept).
+- Agent mode: `agent.json` (server, device token, `rl_install_dir`, `rl_port`, last settings received),
+  `agent.log`, `outbox\<key>.json` (matches waiting for upload; refused ones are moved to `outbox\rejected\`).
+
+## Languages
+
+- Dashboard: `web/i18n.js` (loaded before `app.js`), entries `key: [French, English]` with `{placeholders}` and
+  `{one, other}` plural forms (`Intl.PluralRules`); `tr(key, params)` in `app.js`, `data-i18n*` attributes in
+  `index.html`. Language = `localStorage['rt.lang']`, else the browser's; dates and numbers use `fr-FR` / `en-GB`.
+  `devtools/i18n_test.js` (run by `go test ./web`) checks that every used key exists in both languages.
+- Hash routes are English (`#/history`, `#/players`, `#/player/<handle>`); the French routes of older versions
+  still resolve.
+- Go: `internal/i18n` (`T` / `Tf`, `[French, English]` fmt strings). CLI language: `RT_LANG`, else the Windows
+  display language; server sign-in pages: `Accept-Language`.
+
+## Server mode (`cmd/rltracker-server`)
+
+Same `internal/server` package with `Server.Hub` set (see [SELF_HOSTING.md](SELF_HOSTING.md)):
+
+- schema v3: `matches.user_id` (0 = local user) + leaderboard columns, `manual_days` keyed by user, `users`,
+  `sessions`, `devices` (token hashes only);
+- `/auth/login|callback|logout` (OIDC code flow with PKCE, state and nonce in a short-lived cookie), session cookie;
+- the dashboard API is unchanged but scoped to the signed-in user; `/api/players/{handle}/…` reads another
+  player's matches, manual games, goal and live status; `/api/players`, `/api/leaderboard`, `/api/devices`;
+- `/api/agent/heartbeat|matches|manual/…` with `Authorization: Bearer rtk_…`. Uploads are idempotent
+  (online matches by guid, others by the agent's key); the live state is kept in memory (online = heartbeat
+  within 15 s).
 
 ## How detection works
 

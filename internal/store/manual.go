@@ -48,9 +48,19 @@ func (d ManualDay) Validate() error {
 	return nil
 }
 
-// ListManual returns all manual entries ordered by day then mode.
+// ListManual returns the local user's manual entries.
 func (s *Store) ListManual(ctx context.Context) ([]ManualDay, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT day, mode, games, wins FROM manual_days ORDER BY day, mode`)
+	return s.User(LocalUser).ListManual(ctx)
+}
+
+// SetManual stores a manual entry of the local user.
+func (s *Store) SetManual(ctx context.Context, d ManualDay) error {
+	return s.User(LocalUser).SetManual(ctx, d)
+}
+
+// ListManual returns all manual entries ordered by day then mode.
+func (sc *Scope) ListManual(ctx context.Context) ([]ManualDay, error) {
+	rows, err := sc.s.db.QueryContext(ctx, `SELECT day, mode, games, wins FROM manual_days WHERE user_id = ? ORDER BY day, mode`, sc.uid)
 	if err != nil {
 		return nil, err
 	}
@@ -67,16 +77,16 @@ func (s *Store) ListManual(ctx context.Context) ([]ManualDay, error) {
 }
 
 // SetManual stores an entry; games == 0 removes it.
-func (s *Store) SetManual(ctx context.Context, d ManualDay) error {
+func (sc *Scope) SetManual(ctx context.Context, d ManualDay) error {
 	if err := d.Validate(); err != nil {
 		return err
 	}
 	if d.Games == 0 {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM manual_days WHERE day = ? AND mode = ?`, d.Day, d.Mode)
+		_, err := sc.s.db.ExecContext(ctx, `DELETE FROM manual_days WHERE user_id = ? AND day = ? AND mode = ?`, sc.uid, d.Day, d.Mode)
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO manual_days (day, mode, games, wins) VALUES (?, ?, ?, ?)
-		ON CONFLICT(day, mode) DO UPDATE SET games = excluded.games, wins = excluded.wins,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`, d.Day, d.Mode, d.Games, d.Wins)
+	_, err := sc.s.db.ExecContext(ctx, `INSERT INTO manual_days (user_id, day, mode, games, wins) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, day, mode) DO UPDATE SET games = excluded.games, wins = excluded.wins,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')`, sc.uid, d.Day, d.Mode, d.Games, d.Wins)
 	return err
 }

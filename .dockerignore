@@ -1,0 +1,10 @@
+.git
+dist
+debug
+*.db
+*.db-wal
+*.db-shm
+*.log
+config.json
+agent.json
+trn*.txt

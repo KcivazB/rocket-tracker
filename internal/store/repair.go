@@ -26,7 +26,7 @@ func (s *Store) runRepairs(ctx context.Context) error {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		ms, err := s.List(ctx)
+		ms, err := s.listAll(ctx)
 		if err != nil {
 			return err
 		}

@@ -17,3 +17,10 @@ Thumbs.db
 
 # Local debugging copies of user data
 /debug/
+
+# Self-hosted mode (tokens and secrets)
+agent.json
+outbox/
+/data/
+docker-compose.yml
+oidc_client_secret.txt

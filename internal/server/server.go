@@ -24,15 +24,18 @@ import (
 	"rocket-tracker/internal/tracker"
 )
 
-// Server wires the HTTP API.
+// Server wires the HTTP API. Without Hub it is the local dashboard of a
+// single player (tracker in the same process); with Hub it is the multi-user
+// server fed by agents (see hub.go).
 type Server struct {
 	Version    string
 	Store      *store.Store
-	Config     *config.Manager
+	Config     *config.Manager       // local mode only
 	Tracker    *tracker.Tracker      // may be nil (no live data)
 	ConnStatus func() (bool, string) // may be nil
 	Static     fs.FS                 // may be nil
 	Log        *slog.Logger
+	Hub        *Hub // non-nil: multi-user server mode
 
 	iniMu   sync.Mutex
 	iniAt   time.Time
@@ -46,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 		s.Log = slog.New(slog.DiscardHandler)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/session", s.session)
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/matches", s.listMatches)
 	mux.HandleFunc("GET /api/matches/{id}", s.getMatch)
@@ -56,6 +60,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.putConfig)
 	mux.HandleFunc("GET /api/manual", s.listManual)
 	mux.HandleFunc("PUT /api/manual/{day}/{mode}", s.putManual)
+	if s.Hub != nil {
+		s.hubRoutes(mux)
+	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "unknown endpoint")
 	})
@@ -63,7 +70,8 @@ func (s *Server) Handler() http.Handler {
 	return s.guard(mux)
 }
 
-// guard rejects non-local Host headers (DNS rebinding) and recovers panics.
+// guard recovers panics and protects the routes: in local mode it rejects
+// non-local Host headers (DNS rebinding), in server mode it authenticates.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -72,6 +80,15 @@ func (s *Server) guard(next http.Handler) http.Handler {
 				writeErr(w, http.StatusInternalServerError, "internal error")
 			}
 		}()
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		if s.Hub != nil {
+			if r = s.authenticate(w, r); r != nil {
+				next.ServeHTTP(w, r)
+			}
+			return
+		}
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
@@ -81,11 +98,34 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			writeErr(w, http.StatusForbidden, "forbidden host")
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Cache-Control", "no-store")
-		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// scope returns the data the request reads or writes: the local user's, the
+// signed-in user's, or (read-only routes under /api/players/{handle}/) another
+// player's. On failure it has written the error.
+func (s *Server) scope(w http.ResponseWriter, r *http.Request) (*store.Scope, bool) {
+	if s.Hub == nil {
+		return s.Store.User(store.LocalUser), true
+	}
+	if h := r.PathValue("handle"); h != "" {
+		u, err := s.Store.UserByHandle(r.Context(), h)
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "unknown player")
+			return nil, false
+		} else if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return nil, false
+		}
+		return s.Store.User(u.ID), true
+	}
+	u := userFrom(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, "not signed in")
+		return nil, false
+	}
+	return s.Store.User(u.ID), true
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -106,14 +146,24 @@ type identityJSON struct {
 }
 
 type statusJSON struct {
-	Version    string          `json:"version"`
-	Connected  bool            `json:"connected"`
-	Transport  string          `json:"transport"`
-	InMatch    bool            `json:"in_match"`
-	Live       *tracker.Live   `json:"live"`
-	Ini        setup.IniStatus `json:"ini"`
-	Identity   identityJSON    `json:"identity"`
-	MatchCount int             `json:"match_count"`
+	Version    string           `json:"version"`
+	Connected  bool             `json:"connected"`
+	Transport  string           `json:"transport"`
+	InMatch    bool             `json:"in_match"`
+	Live       *tracker.Live    `json:"live"`
+	Ini        *setup.IniStatus `json:"ini"`
+	Identity   identityJSON     `json:"identity"`
+	MatchCount int              `json:"match_count"`
+	Agent      *agentJSON       `json:"agent,omitempty"` // server mode
+}
+
+// session tells the dashboard which mode it runs in and who is signed in.
+func (s *Server) session(w http.ResponseWriter, r *http.Request) {
+	if s.Hub == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"mode": "local", "version": s.Version})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mode": "server", "version": s.Version, "user": userFrom(r)})
 }
 
 func (s *Server) ini(cfg config.Config) setup.IniStatus {
@@ -129,8 +179,13 @@ func (s *Server) ini(cfg config.Config) setup.IniStatus {
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	if s.Hub != nil {
+		s.hubStatus(w, r)
+		return
+	}
 	cfg := s.Config.Get()
-	st := statusJSON{Version: s.Version, Ini: s.ini(cfg), Identity: identityJSON{Names: cfg.PlayerNames, IDs: cfg.PlayerIDs}}
+	ini := s.ini(cfg)
+	st := statusJSON{Version: s.Version, Ini: &ini, Identity: identityJSON{Names: cfg.PlayerNames, IDs: cfg.PlayerIDs}}
 	if s.ConnStatus != nil {
 		st.Connected, st.Transport = s.ConnStatus()
 	}
@@ -145,7 +200,11 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listMatches(w http.ResponseWriter, r *http.Request) {
-	ms, err := s.Store.List(r.Context())
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	ms, err := sc.List(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -164,7 +223,11 @@ func (s *Server) getMatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	m, err := s.Store.Get(r.Context(), id)
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	m, err := sc.Get(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -197,7 +260,11 @@ func (s *Server) patchMatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "tag must be one of ranked, casual, tournament, private, other")
 		return
 	}
-	m, err := s.Store.SetTag(r.Context(), id, tag)
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	m, err := sc.SetTag(r.Context(), id, tag)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -214,7 +281,11 @@ func (s *Server) deleteMatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	err := s.Store.Delete(r.Context(), id)
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	err := sc.Delete(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -226,7 +297,11 @@ func (s *Server) deleteMatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listManual(w http.ResponseWriter, r *http.Request) {
-	ds, err := s.Store.ListManual(r.Context())
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	ds, err := sc.ListManual(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -248,8 +323,12 @@ func (s *Server) putManual(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "missing games")
 		return
 	}
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
 	d := store.ManualDay{Day: r.PathValue("day"), Mode: strings.ToLower(r.PathValue("mode")), Games: *body.Games, Wins: body.Wins}
-	err := s.Store.SetManual(r.Context(), d)
+	err := sc.SetManual(r.Context(), d)
 	if errors.Is(err, store.ErrInvalidManual) {
 		writeErr(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "store: invalid manual entry: "))
 		return
@@ -261,17 +340,44 @@ func (s *Server) putManual(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
+	if s.Hub != nil {
+		c, err := s.userSettings(r.Context(), userFrom(r).ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, c)
+		return
+	}
 	writeJSON(w, http.StatusOK, s.Config.Get())
 }
 
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
-	c := s.Config.Get() // partial bodies keep the other fields
+	var c config.Config
+	if s.Hub != nil {
+		var err error
+		if c, err = s.userSettings(r.Context(), userFrom(r).ID); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		c = s.Config.Get() // partial bodies keep the other fields
+	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&c); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if !store.ValidTag(strings.TrimSpace(c.DefaultTag)) {
 		writeErr(w, http.StatusBadRequest, "default_tag must be one of ranked, casual, tournament, private, other")
+		return
+	}
+	if s.Hub != nil {
+		saved, err := s.setUserSettings(r.Context(), userFrom(r).ID, c)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, saved)
 		return
 	}
 	saved, err := s.Config.Set(c)
@@ -298,7 +404,11 @@ var CSVHeader = []string{
 }
 
 func (s *Server) exportCSV(w http.ResponseWriter, r *http.Request) {
-	ms, err := s.Store.List(r.Context())
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	ms, err := sc.List(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -396,9 +506,9 @@ func csvRow(m *store.Match, decimalComma bool) []string {
 	return row
 }
 
-const fallbackIndex = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Rocket Tracker</title>
+const fallbackIndex = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Rocket Tracker</title>
 <style>body{background:#0b1020;color:#e6e9f2;font-family:system-ui,sans-serif;padding:2rem}a{color:#5cc8ff}</style>
-</head><body><h1>Rocket Tracker</h1><p>Le tableau de bord n'est pas inclus dans ce build.</p>
+</head><body><h1>Rocket Tracker</h1><p>The dashboard is not included in this build.</p>
 <p>API : <a href="/api/status">/api/status</a> · <a href="/api/matches">/api/matches</a> ·
 <a href="/api/export.csv">export CSV</a></p></body></html>`
 
@@ -437,7 +547,12 @@ func (s *Server) staticHandler() http.Handler {
 
 // ListenAndServe serves on 127.0.0.1:port until ctx is done.
 func (s *Server) ListenAndServe(ctx context.Context, port int) error {
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	return s.ListenAndServeAddr(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+}
+
+// ListenAndServeAddr serves on addr (e.g. ":8080") until ctx is done.
+func (s *Server) ListenAndServeAddr(ctx context.Context, addr string) error {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}

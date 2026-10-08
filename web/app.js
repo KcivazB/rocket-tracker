@@ -15,9 +15,14 @@
   var UU_TO_KMH = 0.036;
   var DAY_MS = 86400000;
 
+  var I18N = root.RT_I18N || (typeof require === 'function' ? require('./i18n.js') : null);
+  var tr = I18N.t;
+  function L() { return I18N.locale(); }
+
   var TAGS = ['ranked', 'casual', 'tournament', 'private', 'other'];
-  var TAG_LABELS = { ranked: 'Classé', casual: 'Occasionnel', tournament: 'Tournoi', private: 'Privé', other: 'Autre' };
-  var WEEKDAYS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+  function tagLabel(tag) { return tag && I18N.has('tag.' + tag) ? tr('tag.' + tag) : (tag || '—'); }
+  /** "3 matchs" / "3 matches": n followed by the plural form of unit (see unit.* keys). */
+  function plural(n, unit) { return fmtNum(n) + ' ' + tr('unit.' + unit, { n: n }); }
 
   function isNum(x) { return typeof x === 'number' && isFinite(x); }
   function num(x) { return isNum(x) ? x : 0; }
@@ -222,8 +227,8 @@
     var bySess = [];
     for (var i = 0; i < 8; i++) bySess.push({ label: i === 7 ? '8+' : String(i + 1), wins: 0, n: 0 });
     var hours = [], days = [];
-    for (var h = 0; h < 24; h++) hours.push({ label: h + 'h', wins: 0, n: 0 });
-    for (var d = 0; d < 7; d++) days.push({ label: WEEKDAYS[d], wins: 0, n: 0 });
+    for (var h = 0; h < 24; h++) hours.push({ label: tr('time.hour', { h: h }), wins: 0, n: 0 });
+    for (var d = 0; d < 7; d++) days.push({ label: tr('weekdays.short')[d], wins: 0, n: 0 });
     var afterWin = { wins: 0, n: 0 }, afterLoss = { wins: 0, n: 0 };
     var sessCount = {};
     ms.forEach(function (m) {
@@ -252,13 +257,13 @@
   }
 
   /* ---------- days & hours insights ---------- */
-  var WEEKDAY_NAMES = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+  function weekdayName(i) { return tr('weekdays.long')[i]; }
   var TIME_MIN_GAMES = 20;   // below this, no verdicts at all
   var TIME_SMOOTH_K = 10;    // pseudo-games pulling small samples toward the overall win rate
   var DAY_START_H = 6;       // hours are ordered from 6h so late-night sessions stay contiguous
   var TIME_MIN_GAP = 3;      // pts from the average below which a best/worst verdict isn't worth stating
-  // "entre 20h et 23h" for a window [from, from+len).
-  function hourRange(from, len) { return 'entre ' + from + 'h et ' + ((from + len) % 24) + 'h'; }
+  // "entre 20h et 23h" / "between 20:00 and 23:00" for a window [from, from+len).
+  function hourRange(from, len) { return tr('time.between', { from: from, to: (from + len) % 24 }); }
   /**
    * Best/worst weekday and hour window by win rate, plus a weekday x hour grid.
    * Rankings use a smoothed rate (wins + k*p0) / (n + k) so tiny samples don't win;
@@ -284,7 +289,7 @@
     });
     var smooth = function (b) { return (b.wins + TIME_SMOOTH_K * p0) / (b.n + TIME_SMOOTH_K); };
     var describe = function (b) { b.wr = ratio(b.wins, b.n); b.delta = b.wr != null && p0 != null ? (b.wr - p0) * 100 : null; return b; };
-    days.forEach(function (b) { describe(b); b.name = WEEKDAY_NAMES[b.idx]; });
+    days.forEach(function (b) { describe(b); b.name = weekdayName(b.idx); });
     hours.forEach(describe);
     grid.forEach(function (row) { row.forEach(describe); });
 
@@ -360,7 +365,7 @@
 
   /** Goals by game minute (0–1 … 4–5, then overtime), ours vs theirs. */
   function computeGoalsPerMinute(ms) {
-    var labels = ['0–1′', '1–2′', '2–3′', '3–4′', '4–5′', 'Prol.'];
+    var labels = ['0–1′', '1–2′', '2–3′', '3–4′', '4–5′', tr('goals.ot')];
     var us = [0, 0, 0, 0, 0, 0], them = [0, 0, 0, 0, 0, 0];
     var nGoals = 0, nMatches = 0;
     ms.forEach(function (m) {
@@ -380,12 +385,12 @@
   }
 
   var MECH_METRICS = [
-    { key: 'avg_speed', label: 'Vitesse moyenne', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
-    { key: 'supersonic_pct', label: 'Supersonique', unit: '%', digits: 1, higherBetter: true },
-    { key: 'air_pct', label: 'Temps en l’air', unit: '%', digits: 1, higherBetter: true },
-    { key: 'avg_boost', label: 'Boost moyen', unit: '', digits: 0, higherBetter: null },
-    { key: 'zero_boost_pct', label: 'À 0 boost', unit: '%', digits: 1, higherBetter: false },
-    { key: 'hits_avg', label: 'Puissance de frappe', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true, src: 'hits' }
+    { key: 'avg_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
+    { key: 'supersonic_pct', unit: '%', digits: 1, higherBetter: true },
+    { key: 'air_pct', unit: '%', digits: 1, higherBetter: true },
+    { key: 'avg_boost', unit: '', digits: 0, higherBetter: null },
+    { key: 'zero_boost_pct', unit: '%', digits: 1, higherBetter: false },
+    { key: 'hits_avg', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true, src: 'hits' }
   ];
 
   function mechValue(m, metric) {
@@ -404,7 +409,7 @@
       var lastN = valid.slice(-ROLL_WINDOW), prevN = valid.slice(-2 * ROLL_WINDOW, -ROLL_WINDOW);
       var trend = (lastN.length >= ROLL_MIN && prevN.length >= ROLL_MIN) ? mean(lastN) - mean(prevN) : null;
       return {
-        key: metric.key, label: metric.label, unit: metric.unit, digits: metric.digits, higherBetter: metric.higherBetter,
+        key: metric.key, label: tr('mech.' + metric.key), unit: metric.unit, digits: metric.digits, higherBetter: metric.higherBetter,
         avg: mean(valid), n: valid.length, trend: trend,
         series: rolling(withMove, function (m) { return mechValue(m, metric); })
       };
@@ -427,23 +432,11 @@
     };
   }
 
-  var STATFEED_LABELS = {
-    Goal: 'Buts', Assist: 'Passes décisives', Save: 'Arrêts', EpicSave: 'Arrêts décisifs', Shot: 'Tirs cadrés',
-    Demolish: 'Démolitions', Demolition: 'Démolitions', AerialGoal: 'Buts aériens', BackwardsGoal: 'Buts en marche arrière',
-    BicycleGoal: 'Buts en retourné', LongGoal: 'Buts de loin', TurtleGoal: 'Buts en tortue', PoolShot: 'Coups de billard',
-    HatTrick: 'Coups du chapeau', Playmaker: 'Meneur de jeu', Savior: 'Sauveur', OvertimeGoal: 'Buts en prolongation',
-    MVP: 'MVP', Win: 'Victoires', FirstTouch: 'Premiers contacts', Clear: 'Dégagements', Center: 'Centres',
-    AerialHit: 'Touches aériennes', BicycleHit: 'Retournés', HighFive: 'High five', LowFive: 'Low five',
-    Juggle: 'Jongles', BreakoutDamage: 'Dégâts (Dropshot)', BreakoutDamageLarge: 'Gros dégâts (Dropshot)',
-    SwishGoal: 'Swish (Hoops)', BulletGoal: 'Buts canon', FlipReset: 'Flip resets', LowFlipReset: 'Flip resets',
-    CrossbarHit: 'Barres transversales', PostHit: 'Poteaux', UltraDemolish: 'Ultra démolitions',
-    Unknown: 'Inconnu'
-  };
   var BASIC_FEED = { Goal: 1, Assist: 1, Save: 1, Shot: 1, Win: 1, MVP: 1 };
 
   function statfeedLabel(name) {
     if (!name) return '—';
-    if (STATFEED_LABELS[name]) return STATFEED_LABELS[name];
+    if (I18N.has('feed.' + name)) return tr('feed.' + name);
     return String(name).replace(/([a-z])([A-Z])/g, '$1 $2');
   }
 
@@ -469,14 +462,15 @@
     outlaw: 'Deadeye Canyon', bb: 'Champions Field (NFL)', haunted: 'Haunted Mannfield', swoosh: 'Estadio Vida',
     fni: 'Futura Garden', woods: 'Drift Woods', hoopsstreet: 'The Block', ff: 'Estadio Vida'
   };
+  // Arena name suffix -> arena.* translation key ('' = not shown).
   var ARENA_VARIANTS = {
-    day: 'Jour', night: 'Nuit', rainy: 'Pluie', rain: 'Pluie', snowy: 'Neige', snow: 'Neige', dawn: 'Aube', dusk: 'Crépuscule',
-    foggy: 'Brume', stormy: 'Orage', winter: 'Hiver', toon: 'Toon', spooky: 'Spooky', season: 'Saison', fire: 'Feu',
-    lava: 'Lave', dark: 'Nuit', grs: '', standard: '', p: ''
+    day: 'day', night: 'night', rainy: 'rain', rain: 'rain', snowy: 'snow', snow: 'snow', dawn: 'dawn', dusk: 'dusk',
+    foggy: 'fog', stormy: 'storm', winter: 'winter', toon: 'toon', spooky: 'spooky', season: 'season', fire: 'fire',
+    lava: 'lava', dark: 'night', grs: '', standard: '', p: ''
   };
 
   function prettyArena(code) {
-    if (!code) return 'Arène inconnue';
+    if (!code) return tr('arena.unknown');
     var raw = String(code).trim();
     var parts = raw.split('_').filter(Boolean);
     if (parts.length && parts[parts.length - 1].toLowerCase() === 'p') parts.pop();
@@ -491,7 +485,7 @@
     }
     var variants = rest.map(function (p) {
       var v = ARENA_VARIANTS[p.toLowerCase()];
-      return v == null ? p.replace(/([a-z])([A-Z])/g, '$1 $2') : v;
+      return v == null ? p.replace(/([a-z])([A-Z])/g, '$1 $2') : v && tr('arena.' + v);
     }).filter(Boolean);
     return variants.length ? name + ' (' + variants.join(', ') + ')' : name;
   }
@@ -642,15 +636,70 @@
   }
 
   /* ---------- routing, history & match page (pure) ---------- */
-  /** Hash route: '#/' dashboard, '#/historique' history, '#/match/<id>' match page (id null when invalid). */
+  /** Hash route: '#/' dashboard, '#/history' history, '#/match/<id>' match page (id null when invalid),
+   *  '#/players' players & leaderboard. Server mode: '#/player/<handle>[/history|/match/<id>]' are another
+   *  player's pages (player = handle, null for your own). */
   function parseRoute(hash) {
     var h = String(hash || '').replace(/^#\/?/, '').replace(/\/+$/, '');
     try { h = decodeURIComponent(h); } catch (e) { /* keep raw */ }
-    if (h === 'historique') return { view: 'history', id: null };
+    // Routes of the French-only versions (bookmarks).
+    h = h.replace(/^joueurs$/, 'players').replace(/^joueur\//, 'player/').replace(/(^|\/)historique$/, '$1history');
+    var player = null;
+    var pm = /^player\/([^/]+)(?:\/(.*))?$/.exec(h);
+    if (pm) { player = pm[1].toLowerCase(); h = pm[2] || ''; }
+    else if (h === 'players') return { view: 'players', id: null, player: null };
+    if (h === 'history') return { view: 'history', id: null, player: player };
     var r = /^match\/(\d+)$/.exec(h);
-    if (r) return { view: 'match', id: +r[1] };
-    if (/^match(\/|$)/.test(h)) return { view: 'match', id: null };
-    return { view: 'dash', id: null };
+    if (r) return { view: 'match', id: +r[1], player: player };
+    if (/^match(\/|$)/.test(h)) return { view: 'match', id: null, player: player };
+    return { view: 'dash', id: null, player: player };
+  }
+  /** Hash of a page ('' dashboard, 'history', 'match/<id>') of a player (null = your own). */
+  function routeHash(player, path) {
+    return '#/' + (player ? 'player/' + encodeURIComponent(player) + (path ? '/' : '') : '') + (path || '');
+  }
+
+  /* ---------- players & leaderboard (pure) ---------- */
+  function playerHaystack(p) {
+    return normText([p.name, p.handle].concat(p.game_names || []).join(' '));
+  }
+  /** Players whose name, handle or in-game names contain every search term. */
+  function filterPlayers(ps, q) {
+    var terms = searchTerms(q);
+    return (ps || []).filter(function (p) {
+      var hay = playerHaystack(p);
+      return terms.every(function (t) { return hay.indexOf(t) >= 0; });
+    });
+  }
+  var LB_SORTS = {
+    name: function (r) { return normText(r.name); },
+    games: function (r) { return r.games; },
+    winrate: function (r) { return r.winrate; },
+    goal_diff_avg: function (r) { return r.goal_diff_avg; },
+    score_avg: function (r) { return r.score_avg; },
+    goals_avg: function (r) { return r.goals_avg; },
+    assists_avg: function (r) { return r.assists_avg; },
+    saves_avg: function (r) { return r.saves_avg; },
+    shots_avg: function (r) { return r.shots_avg; },
+    mvp_rate: function (r) { return r.mvp_rate; }
+  };
+  /** Leaderboard rows with at least minGames decided games, sorted (dir -1 = descending) and ranked. */
+  function rankLeaders(rows, key, dir, minGames) {
+    var get = LB_SORTS[key] || LB_SORTS.winrate;
+    dir = dir === 1 ? 1 : -1;
+    var out = (rows || []).filter(function (r) { return num(r.games) >= (minGames || 0); }).map(function (r) {
+      return Object.assign({}, r, { mvp_rate: ratio(num(r.mvps), num(r.games)) });
+    });
+    out.sort(function (a, b) {
+      var x = get(a), y = get(b);
+      if (x == null && y == null) return num(b.games) - num(a.games);
+      if (x == null) return 1;
+      if (y == null) return -1;
+      var c = typeof x === 'string' ? x.localeCompare(y) : x - y;
+      return c * dir || num(b.games) - num(a.games) || String(a.name).localeCompare(String(b.name));
+    });
+    out.forEach(function (r, i) { r.rank = i + 1; });
+    return out;
   }
 
   var DEFAULT_HIST_FILTERS = { mode: 'all', result: 'all', tag: 'all', period: 'all', q: '', includeOffline: true };
@@ -786,33 +835,35 @@
     };
   }
 
+  // lk: translation key of the label (see statLabel).
   var PERF_STATS = [
-    { key: 'score', label: 'Score', digits: 0, higherBetter: true },
-    { key: 'goals', label: 'Buts', digits: 0, higherBetter: true },
-    { key: 'assists', label: 'Passes', digits: 0, higherBetter: true },
-    { key: 'saves', label: 'Arrêts', digits: 0, higherBetter: true },
-    { key: 'shots', label: 'Tirs', digits: 0, higherBetter: true },
-    { key: 'touches', label: 'Touches', digits: 0, higherBetter: true },
-    { key: 'demos', label: 'Démolitions', digits: 0, higherBetter: true }
+    { key: 'score', lk: 'perf.score', digits: 0, higherBetter: true },
+    { key: 'goals', lk: 'perf.goals', digits: 0, higherBetter: true },
+    { key: 'assists', lk: 'perf.assists', digits: 0, higherBetter: true },
+    { key: 'saves', lk: 'perf.saves', digits: 0, higherBetter: true },
+    { key: 'shots', lk: 'perf.shots', digits: 0, higherBetter: true },
+    { key: 'touches', lk: 'perf.touches', digits: 0, higherBetter: true },
+    { key: 'demos', lk: 'perf.demos', digits: 0, higherBetter: true }
   ];
   var MOVE_STATS = [
-    { key: 'avg_speed', label: 'Vitesse moyenne', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
-    { key: 'supersonic_pct', label: 'Supersonique', unit: '%', digits: 1, higherBetter: true },
-    { key: 'avg_boost', label: 'Boost moyen', unit: '', digits: 0, higherBetter: null },
-    { key: 'zero_boost_pct', label: 'À 0 boost', unit: '%', digits: 1, higherBetter: false },
-    { key: 'full_boost_pct', label: 'À 100 boost', unit: '%', digits: 1, higherBetter: null },
-    { key: 'boosting_pct', label: 'Boost actif', unit: '%', digits: 1, higherBetter: null },
-    { key: 'powerslide_pct', label: 'Powerslide', unit: '%', digits: 1, higherBetter: null },
-    { key: 'demolished_s', label: 'Temps démoli', unit: 's', digits: 1, higherBetter: false },
-    { key: 'ground_pct', label: 'Au sol', unit: '%', digits: 1, split: true },
-    { key: 'wall_pct', label: 'Sur les murs', unit: '%', digits: 1, split: true },
-    { key: 'air_pct', label: 'En l’air', unit: '%', digits: 1, split: true }
+    { key: 'avg_speed', lk: 'mech.avg_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
+    { key: 'supersonic_pct', lk: 'mech.supersonic_pct', unit: '%', digits: 1, higherBetter: true },
+    { key: 'avg_boost', lk: 'mech.avg_boost', unit: '', digits: 0, higherBetter: null },
+    { key: 'zero_boost_pct', lk: 'mech.zero_boost_pct', unit: '%', digits: 1, higherBetter: false },
+    { key: 'full_boost_pct', lk: 'mech.full_boost_pct', unit: '%', digits: 1, higherBetter: null },
+    { key: 'boosting_pct', lk: 'mech.boosting_pct', unit: '%', digits: 1, higherBetter: null },
+    { key: 'powerslide_pct', lk: 'mech.powerslide_pct', unit: '%', digits: 1, higherBetter: null },
+    { key: 'demolished_s', lk: 'mech.demolished_s', unit: 's', digits: 1, higherBetter: false },
+    { key: 'ground_pct', lk: 'mech.ground_pct', unit: '%', digits: 1, split: true },
+    { key: 'wall_pct', lk: 'mech.wall_pct', unit: '%', digits: 1, split: true },
+    { key: 'air_pct', lk: 'mech.air_split', unit: '%', digits: 1, split: true }
   ];
   var HIT_STATS = [
-    { key: 'count', label: 'Frappes', unit: '', digits: 0, higherBetter: null },
-    { key: 'avg_speed', label: 'Frappe moyenne', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
-    { key: 'max_speed', label: 'Frappe max.', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true }
+    { key: 'count', lk: 'hits.count', unit: '', digits: 0, higherBetter: null },
+    { key: 'avg_speed', lk: 'hits.avg_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
+    { key: 'max_speed', lk: 'hits.max_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true }
   ];
+  function statLabel(s) { return tr(s.lk); }
   /** Value of stat s for match m from source 'me' | 'movement' | 'hits' (converted, null when missing). */
   function statValue(m, src, s) {
     var o = m ? m[src] : null;
@@ -846,16 +897,17 @@
     };
   }
 
-  /* ---------- formatting (pure) ---------- */
+  /* ---------- formatting (pure, follows the language) ---------- */
   var nfCache = {};
   function nf(d) {
-    var k = String(d);
-    if (!nfCache[k]) nfCache[k] = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
+    var k = L() + '|' + d;
+    if (!nfCache[k]) nfCache[k] = new Intl.NumberFormat(L(), { minimumFractionDigits: d, maximumFractionDigits: d });
     return nfCache[k];
   }
+  function pct(s) { return tr('fmt.pct', { v: s }); }
   function fmtNum(x, d) { return isNum(x) ? nf(d || 0).format(x) : '—'; }
-  function fmtPct(r, d) { return isNum(r) ? nf(d || 0).format(r * 100) + '\u202f%' : '—'; }
-  function fmtPct100(x, d) { return isNum(x) ? nf(d || 0).format(x) + '\u202f%' : '—'; }
+  function fmtPct(r, d) { return isNum(r) ? pct(nf(d || 0).format(r * 100)) : '—'; }
+  function fmtPct100(x, d) { return isNum(x) ? pct(nf(d || 0).format(x)) : '—'; }
   function fmtSigned(x, d) {
     if (!isNum(x)) return '—';
     var s = nf(d || 0).format(Math.abs(x));
@@ -870,11 +922,11 @@
   function fmtHours(sec) {
     if (!isNum(sec) || sec <= 0) return '0 min';
     var h = Math.floor(sec / 3600), mnt = Math.round((sec % 3600) / 60);
-    return h ? h + '\u202fh' + (mnt ? ' ' + String(mnt).padStart(2, '0') : '') : mnt + '\u202fmin';
+    return h ? h + ' h' + (mnt ? ' ' + String(mnt).padStart(2, '0') : '') : mnt + ' min';
   }
 
   var api = {
-    ROLL_WINDOW: ROLL_WINDOW, SESSION_GAP_MS: SESSION_GAP_MS, UU_TO_KMH: UU_TO_KMH, TAGS: TAGS, TAG_LABELS: TAG_LABELS,
+    ROLL_WINDOW: ROLL_WINDOW, SESSION_GAP_MS: SESSION_GAP_MS, UU_TO_KMH: UU_TO_KMH, TAGS: TAGS, tagLabel: tagLabel, plural: plural,
     DEFAULT_FILTERS: DEFAULT_FILTERS, MECH_METRICS: MECH_METRICS,
     isNum: isNum, ratio: ratio, regulationS: regulationS, mean: mean, wl: wl, kmh: kmh, annotate: annotate, modeKey: modeKey, filterMatches: filterMatches,
     streaks: streaks, computeKpis: computeKpis, rolling: rolling, computeProgression: computeProgression,
@@ -883,7 +935,7 @@
     computeStatfeed: computeStatfeed, statfeedLabel: statfeedLabel, prettyArena: prettyArena, computeArenas: computeArenas,
     computeTeammates: computeTeammates, computeGoal: computeGoal, computeTimeInsights: computeTimeInsights, trackedByMode: trackedByMode, trackerUrl: trackerUrl, fmtNum: fmtNum, fmtPct: fmtPct, fmtPct100: fmtPct100, fmtSigned: fmtSigned,
     fmtClock: fmtClock, fmtHours: fmtHours, dayKey: dayKey,
-    parseRoute: parseRoute, DEFAULT_HIST_FILTERS: DEFAULT_HIST_FILTERS, filterHistory: filterHistory, filterManualHistory: filterManualHistory,
+    parseRoute: parseRoute, routeHash: routeHash, filterPlayers: filterPlayers, rankLeaders: rankLeaders, DEFAULT_HIST_FILTERS: DEFAULT_HIST_FILTERS, filterHistory: filterHistory, filterManualHistory: filterManualHistory,
     groupHistory: groupHistory, paginateGroups: paginateGroups, summarizeHistory: summarizeHistory, matchNeighbors: matchNeighbors,
     matchContext: matchContext, matchBaseline: matchBaseline, statValue: statValue, PERF_STATS: PERF_STATS, MOVE_STATS: MOVE_STATS, HIT_STATS: HIT_STATS
   };
@@ -897,12 +949,15 @@
   /* Part 2 — UI                                                           */
   /* ===================================================================== */
 
+  // Language: saved choice, else the browser's (see i18n.js). Changing it reloads the page.
+  I18N.setLang(I18N.detect());
+
   var $ = function (sel, el) { return (el || document).querySelector(sel); };
   var $$ = function (sel, el) { return Array.prototype.slice.call((el || document).querySelectorAll(sel)); };
   function playerName(name, primaryId) {
     var url = trackerUrl(name, primaryId);
     var label = esc(name || '?');
-    return url ? '<a class="trn" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" title="Voir le profil tracker.gg (MMR, rangs, peaks)">' + label + '</a>' : label;
+    return url ? '<a class="trn" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" title="' + esc(tr('ui.trnTip')) + '">' + label + '</a>' : label;
   }
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -913,6 +968,7 @@
   var params = new URLSearchParams(location.search);
   var MOCK = params.get('mock');
   var PAGE_SIZE = 20;
+  var DEFAULT_LB = { mode: 'all', period: '30', tag: 'all', min: 5, sort: 'winrate', dir: -1 };
 
   var state = {
     all: [],
@@ -929,10 +985,39 @@
     route: parseRoute(location.hash),
     hist: loadHistFilters(),
     histShown: 100,
-    histScroll: 0
+    histScroll: 0,
+    // Server mode (rltracker-server): signed-in user, whose data is loaded, players page.
+    mode: 'local',
+    me: null,
+    dataFor: '',   // handle of the player whose data is loaded ('' = yours)
+    gen: 0,        // bumped when dataFor changes; stale responses are dropped
+    players: null,
+    leaders: null,
+    lb: loadLbFilters(),
+    playersQ: ''
   };
   var HIST_PAGE = 100;
   var charts = {};
+
+  function isServer() { return state.mode === 'server'; }
+  /** Another player's pages are read-only. */
+  function readOnly() { return !!state.route.player; }
+  function apiBase() { return state.dataFor ? '/api/players/' + encodeURIComponent(state.dataFor) : '/api'; }
+  /** Link to a page of the player being viewed ('' dashboard, 'history', 'match/<id>'). */
+  function href(path) { return routeHash(state.route.player, path); }
+  function viewedPlayer() {
+    var h = state.route.player;
+    return h ? (state.players || []).find(function (p) { return p.handle === h; }) || { handle: h, name: h, game_names: [] } : null;
+  }
+  function loadLbFilters() {
+    var f = Object.assign({}, DEFAULT_LB);
+    try {
+      var s = JSON.parse(localStorage.getItem('rt.leaderboard') || 'null');
+      if (s && typeof s === 'object') Object.keys(f).forEach(function (k) { if (s[k] != null && typeof s[k] === typeof f[k]) f[k] = s[k]; });
+    } catch (e) { /* storage unavailable */ }
+    return f;
+  }
+  function saveLbFilters() { try { localStorage.setItem('rt.leaderboard', JSON.stringify(state.lb)); } catch (e) { /* ignore */ } }
 
   function loadFilters() {
     var f = Object.assign({}, DEFAULT_FILTERS);
@@ -959,6 +1044,11 @@
     if (MOCK) return mockFetch(path, opts || {});
     return fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' }, cache: 'no-store' }, opts || {}))
       .then(function (r) {
+        if (r.status === 401) {
+          // Server mode, session expired: sign in again and come back here.
+          location.href = '/auth/login?next=' + encodeURIComponent(location.pathname + location.search + location.hash);
+          return new Promise(function () {});
+        }
         if (!r.ok) {
           return r.text().then(function (txt) {
             var detail = '';
@@ -994,6 +1084,7 @@
     })());
     return ready.then(function () {
       var m;
+      if (path === '/api/session') return { mode: 'local', version: '0.1.0-mock' };
       if (path === '/api/matches' && method === 'GET') return JSON.parse(JSON.stringify(mock.matches));
       if ((m = path.match(/^\/api\/matches\/(\d+)$/))) {
         var id = +m[1];
@@ -1176,13 +1267,14 @@
     var d = new Date(t);
     var o = { weekday: 'short', day: 'numeric', month: 'short' };
     if (withTime) { o.hour = '2-digit'; o.minute = '2-digit'; }
-    return d.toLocaleString('fr-FR', o);
+    return d.toLocaleString(L(), o);
   }
+  function fmtDay(t, o) { return new Date(t).toLocaleDateString(L(), o); }
   function hasData(arr) { return arr.some(function (v) { return v != null; }); }
+  function wlShort(w, l) { return tr('wl.short', { w: w, l: l }); }
 
   /* ---------- render: season goal ---------- */
-  var GOAL_MODE_LABEL = { '1v1': '1v1', '2v2': '2v2', '3v3': '3v3', '4v4': '4v4', all: 'tous modes' };
-  function plural(n, w) { return fmtNum(n) + ' ' + w + (n > 1 ? 's' : ''); }
+  function goalModeLabel(mode) { return mode === 'all' ? tr('goal.allModes') : mode; }
   function goalKpi(label, value, sub, pct, cls) {
     return '<div class="card kpi goal-kpi' + (cls ? ' ' + cls : '') + '"><span class="kpi-label">' + label + '</span>' +
       '<span class="kpi-value">' + value + '</span>' +
@@ -1191,30 +1283,31 @@
   }
   function renderGoal() {
     var g = computeGoal(state.all, state.config && state.config.goal, null, state.manual);
-    var modeLbl = GOAL_MODE_LABEL[g.mode] || g.mode;
-    var fmtD = function (t) { return new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }); };
-    $('#goal-sub').textContent = g.daily + ' games de ' + modeLbl + ' par jour · du ' + fmtD(g.start) + ' au ' + fmtD(g.end) + ' (' + g.days.length + ' jours)';
+    var fmtD = function (t) { return fmtDay(t, { day: 'numeric', month: 'short', year: 'numeric' }); };
+    $('#goal-sub').textContent = tr('goal.sub', { daily: g.daily, mode: goalModeLabel(g.mode), from: fmtD(g.start), to: fmtD(g.end), days: g.days.length });
 
     var t = g.today, left = Math.max(0, g.daily - t.count);
-    var todaySub = g.before ? 'La saison commence le ' + fmtD(g.start)
-      : g.after ? 'Saison terminée'
-      : left === 0 ? '<span class="pos">Objectif du jour atteint ✓</span>' + (t.count > g.daily ? ' (+' + (t.count - g.daily) + ')' : '')
-      : 'Encore ' + plural(left, 'game') + ' aujourd’hui';
-    if (t.count) todaySub += ' · ' + t.wins + ' V – ' + t.losses + ' D';
+    var perDay = '<small>' + tr('goal.perDay') + '</small>';
+    var todaySub = g.before ? tr('goal.startsOn', { date: fmtD(g.start) })
+      : g.after ? tr('goal.seasonOver')
+      : left === 0 ? '<span class="pos">' + tr('goal.dailyReached') + '</span>' + (t.count > g.daily ? ' (+' + (t.count - g.daily) + ')' : '')
+      : tr('goal.leftToday', { games: plural(left, 'game') });
+    if (t.count) todaySub += ' · ' + wlShort(t.wins, t.losses);
     var html =
-      goalKpi('Aujourd’hui', fmtNum(t.count) + '<small> / ' + g.daily + '</small>', todaySub, t.count / g.daily, left === 0 && !g.before && !g.after ? 'done' : '') +
-      goalKpi('Games de la saison', fmtNum(g.total) + '<small> / ' + fmtNum(g.target) + '</small>',
-        'Jour ' + g.elapsedDays + ' sur ' + g.days.length + (g.wr != null ? ' · ' + fmtPct(g.wr) + ' de victoires' : ''), g.target ? g.total / g.target : 0) +
-      goalKpi('Jours validés', fmtNum(g.daysMet) + '<small> / ' + fmtNum(g.elapsedDays) + '</small>',
-        g.elapsedDays ? fmtPct(g.daysMet / g.elapsedDays) + ' des jours écoulés' : 'Aucun jour écoulé', null) +
-      goalKpi('Série en cours', plural(g.curStreak, 'jour'), 'Record : ' + plural(g.bestStreak, 'jour'), null, g.curStreak > 0 ? 'streak' : '') +
-      goalKpi('Rythme', g.avgPerDay != null ? fmtNum(g.avgPerDay, 1) + '<small> / jour</small>' : '—',
-        g.projection != null ? 'Projection fin de saison : <b>' + fmtNum(g.projection) + '</b> games' : 'Pas encore de données', null,
+      goalKpi(tr('goal.today'), fmtNum(t.count) + '<small> / ' + g.daily + '</small>', todaySub, t.count / g.daily, left === 0 && !g.before && !g.after ? 'done' : '') +
+      goalKpi(tr('goal.seasonGames'), fmtNum(g.total) + '<small> / ' + fmtNum(g.target) + '</small>',
+        tr('goal.dayOf', { d: g.elapsedDays, total: g.days.length }) + (g.wr != null ? ' · ' + tr('goal.wonPct', { pct: fmtPct(g.wr) }) : ''), g.target ? g.total / g.target : 0) +
+      goalKpi(tr('goal.daysMet'), fmtNum(g.daysMet) + '<small> / ' + fmtNum(g.elapsedDays) + '</small>',
+        g.elapsedDays ? tr('goal.ofElapsed', { pct: fmtPct(g.daysMet / g.elapsedDays) }) : tr('goal.noneElapsed'), null) +
+      goalKpi(tr('goal.streak'), plural(g.curStreak, 'day'), tr('goal.best', { v: plural(g.bestStreak, 'day') }), null, g.curStreak > 0 ? 'streak' : '') +
+      goalKpi(tr('goal.pace'), g.avgPerDay != null ? fmtNum(g.avgPerDay, 1) + perDay : '—',
+        g.projection != null ? tr('goal.projection', { v: '<b>' + fmtNum(g.projection) + '</b>' }) : tr('goal.noData'), null,
         g.projection != null ? (g.projection >= g.target ? 'on-track' : 'behind') : '') +
-      goalKpi('Pour finir à ' + fmtNum(g.target), g.neededPerDay != null ? fmtNum(g.neededPerDay) + '<small> / jour</small>' : '—',
-        g.neededPerDay == null ? 'Saison terminée' : g.total >= g.target ? '<span class="pos">Objectif de saison atteint ✓</span>' : plural(g.target - g.total, 'game') + ' restantes sur ' + plural(g.remainingDays, 'jour'), null);
+      goalKpi(tr('goal.toReach', { v: fmtNum(g.target) }), g.neededPerDay != null ? fmtNum(g.neededPerDay) + perDay : '—',
+        g.neededPerDay == null ? tr('goal.seasonOver') : g.total >= g.target ? '<span class="pos">' + tr('goal.seasonReached') + '</span>'
+          : tr('goal.leftIn', { games: plural(g.target - g.total, 'game'), days: plural(g.remainingDays, 'day'), n: g.target - g.total }), null);
     $('#goal-kpis').innerHTML = html;
-    $('#goal-hint').hidden = !!(state.config && state.config.goal && state.config.goal.season_start);
+    $('#goal-hint').hidden = readOnly() || !!(state.config && state.config.goal && state.config.goal.season_start);
 
     // One grid per month, Monday first.
     var months = [], cur = null;
@@ -1223,7 +1316,7 @@
       if (!cur || cur.mk !== mk) { cur = { mk: mk, days: [] }; months.push(cur); }
       cur.days.push(d);
     });
-    var dow = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+    var dow = tr('weekdays.initial');
     $('#goal-cal').innerHTML = months.map(function (mo) {
       var first = new Date(mo.days[0].t);
       var lead = (first.getDay() + 6) % 7;
@@ -1237,18 +1330,19 @@
         else cls += ' l' + Math.min(3, 1 + Math.floor(d.count / g.daily * 3));
         if (d.today) cls += ' today';
         if (d.manual) cls += ' has-manual';
-        var tip = new Date(d.t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) + ' · ' +
-          (d.future ? 'à venir' : plural(d.count, 'game') + (d.count ? ' (' + d.wins + ' V – ' + d.losses + ' D)' : '') + (d.manual ? ' · dont ' + d.manual + ' saisie' + (d.manual > 1 ? 's' : '') + ' à la main' : '') + (d.met ? ' · objectif atteint' : ''));
+        var tip = fmtDay(d.t, { weekday: 'long', day: 'numeric', month: 'long' }) + ' · ' +
+          (d.future ? tr('goal.upcoming') : plural(d.count, 'game') + (d.count ? ' (' + wlShort(d.wins, d.losses) + ')' : '') +
+            (d.manual ? ' · ' + tr('goal.byHand', { n: d.manual }) : '') + (d.met ? ' · ' + tr('goal.reached') : ''));
         var inner = '<span class="dn">' + new Date(d.t).getDate() + '</span>' + (d.future ? '' : '<span class="dc">' + d.count + '</span>');
-        cells += d.future
+        cells += d.future || readOnly()
           ? '<span class="' + cls + '" title="' + esc(tip) + '" aria-label="' + esc(tip) + '">' + inner + '</span>'
-          : '<button type="button" class="' + cls + '" data-day="' + d.key + '" title="' + esc(tip + ' · cliquer pour saisir des games') + '" aria-label="' + esc(tip + '. Saisir des games') + '">' + inner + '</button>';
+          : '<button type="button" class="' + cls + '" data-day="' + d.key + '" title="' + esc(tip + ' · ' + tr('goal.clickToAdd')) + '" aria-label="' + esc(tip + '. ' + tr('goal.addGames')) + '">' + inner + '</button>';
       });
-      var name = first.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+      var name = fmtDay(first, { month: 'long', year: 'numeric' });
       var mTotal = mo.days.reduce(function (a, d) { return a + d.count; }, 0);
       var mMet = mo.days.filter(function (d) { return d.met; }).length;
       return '<div class="card cal-month"><div class="cal-head"><span class="card-title">' + esc(name.charAt(0).toUpperCase() + name.slice(1)) + '</span>' +
-        '<span class="card-meta">' + plural(mTotal, 'game') + ' · ' + mMet + ' j validés</span></div>' +
+        '<span class="card-meta">' + plural(mTotal, 'game') + ' · ' + tr('goal.monthMet', { v: mMet }) + '</span></div>' +
         '<div class="cal-dow">' + dow.map(function (x) { return '<span>' + x + '</span>'; }).join('') + '</div>' +
         '<div class="cal-days">' + cells + '</div></div>';
     }).join('');
@@ -1259,34 +1353,33 @@
     var k = computeKpis(ms);
     var st = k.streaks;
     var recent = ms.slice(-20);
-    var curTxt = st.current ? st.current.len + (st.current.type === 'win' ? ' V' : ' D') : '—';
+    var curTxt = st.current ? st.current.len + ' ' + tr('res.' + st.current.type + '.short') : '—';
     var curCls = st.current ? (st.current.type === 'win' ? 'w' : 'l') : '';
-    var curLabel = st.current ? (st.current.type === 'win' ? (st.current.len > 1 ? 'victoires d’affilée' : 'victoire') : (st.current.len > 1 ? 'défaites d’affilée' : 'défaite')) : '';
+    var curLabel = st.current ? tr(st.current.type === 'win' ? 'kpi.streakWins' : 'kpi.streakLosses', { n: st.current.len }) : '';
     var form = recent.map(function (m) {
       var cls = m.result === 'win' ? 'win' : m.result === 'loss' ? 'loss' : 'abandoned';
-      var letter = m.result === 'win' ? 'V' : m.result === 'loss' ? 'D' : 'A';
       var tip = fmtDate(m._t, true) + ' · ' + (m.mode || '') + ' · ' + num(m.team_score) + '–' + num(m.opp_score);
-      return '<span class="form-cell ' + cls + '" title="' + esc(tip) + '">' + letter + '</span>';
+      return '<span class="form-cell ' + cls + '" title="' + esc(tip) + '">' + tr('res.' + cls + '.short') + '</span>';
     }).join('');
     var html = '';
     html += '<div class="card kpi hero">' +
-      '<span class="kpi-label">% de victoire</span>' +
+      '<span class="kpi-label">' + tr('kpi.winrate') + '</span>' +
       '<span class="kpi-value">' + fmtPct(k.winrate) + '</span>' +
-      '<div class="kpi-wl"><span class="wl"><i style="background:var(--win)"></i>' + k.wins + ' V</span>' +
-      '<span class="wl"><i style="background:var(--loss)"></i>' + k.losses + ' D</span>' +
-      (k.abandoned ? '<span class="wl"><i style="background:var(--neutral)"></i>' + k.abandoned + ' abandon' + (k.abandoned > 1 ? 's' : '') + '</span>' : '') + '</div>' +
-      '<div class="form"><div class="form-head"><span>Forme récente</span><span>' + recent.length + ' derniers · récent à droite</span></div>' +
+      '<div class="kpi-wl"><span class="wl"><i style="background:var(--win)"></i>' + k.wins + ' ' + tr('res.win.short') + '</span>' +
+      '<span class="wl"><i style="background:var(--loss)"></i>' + k.losses + ' ' + tr('res.loss.short') + '</span>' +
+      (k.abandoned ? '<span class="wl"><i style="background:var(--neutral)"></i>' + plural(k.abandoned, 'abandon') + '</span>' : '') + '</div>' +
+      '<div class="form"><div class="form-head"><span>' + tr('kpi.form') + '</span><span>' + tr('kpi.formSub', { v: recent.length }) + '</span></div>' +
       '<div class="form-strip" style="--cells:' + Math.max(recent.length, 10) + '">' + form + '</div></div>' +
       '</div>';
-    html += tile('Matchs', fmtNum(k.n), k.sessions + ' session' + (k.sessions > 1 ? 's' : '') + ' · ' + fmtHours(k.playSeconds) + ' de jeu');
-    html += tile('Diff. de buts / match', fmtSigned(k.goalDiffAvg, 2), fmtNum(k.teamGoalsAvg, 1) + ' marqués · ' + fmtNum(k.oppGoalsAvg, 1) + ' encaissés');
-    html += tile('Score moyen', fmtNum(k.avgScore), 'Meilleur : ' + fmtNum(k.bestScore));
-    html += tile('Série en cours', '<span class="streak-badge ' + curCls + '">' + curTxt + '</span>',
-      (curLabel ? esc(curLabel) + ' · ' : '') + 'record ' + (st.bestWin ? st.bestWin + ' V' : '—'));
-    html += '<div class="card kpi per-match"><span class="kpi-label">Par match</span><div class="pm-grid">' +
-      pm('Buts', k.goalsPer) + pm('Passes', k.assistsPer) + pm('Arrêts', k.savesPer) + pm('Tirs', k.shotsPer) + '</div></div>';
-    html += tile('Conversion des tirs', fmtPct(k.conversion), fmtNum(k.goals) + ' buts sur ' + fmtNum(k.shots) + ' tirs cadrés');
-    html += tile('Taux de MVP', fmtPct(k.mvpRate), k.mvp + ' MVP · ' + fmtPct(k.mvpOfWins) + ' des victoires');
+    html += tile(tr('kpi.matches'), fmtNum(k.n), plural(k.sessions, 'session') + ' · ' + tr('kpi.played', { t: fmtHours(k.playSeconds) }));
+    html += tile(tr('kpi.goalDiff'), fmtSigned(k.goalDiffAvg, 2), tr('kpi.scoredConceded', { s: fmtNum(k.teamGoalsAvg, 1), c: fmtNum(k.oppGoalsAvg, 1) }));
+    html += tile(tr('kpi.avgScore'), fmtNum(k.avgScore), tr('kpi.bestScore', { v: fmtNum(k.bestScore) }));
+    html += tile(tr('kpi.streak'), '<span class="streak-badge ' + curCls + '">' + curTxt + '</span>',
+      (curLabel ? esc(curLabel) + ' · ' : '') + tr('kpi.bestStreak', { v: st.bestWin ? st.bestWin + ' ' + tr('res.win.short') : '—' }));
+    html += '<div class="card kpi per-match"><span class="kpi-label">' + tr('kpi.perMatch') + '</span><div class="pm-grid">' +
+      pm(tr('perf.goals'), k.goalsPer) + pm(tr('perf.assists'), k.assistsPer) + pm(tr('perf.saves'), k.savesPer) + pm(tr('perf.shots'), k.shotsPer) + '</div></div>';
+    html += tile(tr('kpi.conversion'), fmtPct(k.conversion), tr('kpi.conversionSub', { g: fmtNum(k.goals), s: fmtNum(k.shots) }));
+    html += tile(tr('kpi.mvpRate'), fmtPct(k.mvpRate), tr('kpi.mvpSub', { v: k.mvp, pct: fmtPct(k.mvpOfWins) }));
     $('#kpis').innerHTML = html;
 
     function tile(label, value, sub) {
@@ -1301,7 +1394,7 @@
   function rollingLine(id, data, color, ms, o) {
     o = o || {};
     var labels = ms.map(function (m, i) { return i + 1; });
-    var empty = hasData(data) ? null : 'Pas encore assez de matchs (min. ' + ROLL_MIN + ')';
+    var empty = hasData(data) ? null : tr('prog.notEnough', { min: ROLL_MIN });
     return makeChart(id, {
       type: 'line',
       data: {
@@ -1319,9 +1412,9 @@
           crosshair: { enabled: true },
           tooltip: {
             callbacks: {
-              title: function (it) { var m = ms[it[0].dataIndex]; return 'Match n°' + (it[0].dataIndex + 1) + ' · ' + fmtDate(m._t, true); },
-              label: function (it) { return ' ' + o.label + ' : ' + o.fmt(it.raw); },
-              footer: function () { return 'Moyenne des ' + ROLL_WINDOW + ' derniers matchs'; }
+              title: function (it) { var m = ms[it[0].dataIndex]; return tr('prog.matchNo', { i: it[0].dataIndex + 1 }) + ' · ' + fmtDate(m._t, true); },
+              label: function (it) { return ' ' + tr('fmt.labelValue', { label: o.label, v: o.fmt(it.raw) }); },
+              footer: function () { return tr('prog.avgOfLast', { w: ROLL_WINDOW }); }
             }
           }
         }
@@ -1333,26 +1426,27 @@
 
   function renderProgression(ms) {
     var p = computeProgression(ms);
+    var pctTick = function (v) { return pct(v); };
     rollingLine('c-roll-wr', p.winrate, T.us, ms, {
-      label: '% victoire', fill: true, ref: 50, refLabel: '50 %', fmt: function (v) { return fmtPct100(v); },
-      y: { min: 0, max: 100, ticks: { stepSize: 25, color: T.muted, padding: 8, callback: function (v) { return v + ' %'; } } }
+      label: tr('prog.winrate'), fill: true, ref: 50, refLabel: pct(50), fmt: function (v) { return fmtPct100(v); },
+      y: { min: 0, max: 100, ticks: { stepSize: 25, color: T.muted, padding: 8, callback: pctTick } }
     });
-    $('#m-roll-wr').textContent = 'Actuel : ' + fmtPct100(lastVal(p.winrate));
+    $('#m-roll-wr').textContent = tr('prog.current', { v: fmtPct100(lastVal(p.winrate)) });
     rollingLine('c-roll-gd', p.goalDiff, T.us, ms, {
-      label: 'Diff. de buts', ref: 0, fmt: function (v) { return fmtSigned(v, 2); },
+      label: tr('prog.goalDiff'), ref: 0, fmt: function (v) { return fmtSigned(v, 2); },
       y: { suggestedMin: -1.5, suggestedMax: 1.5, ticks: { color: T.muted, padding: 8, maxTicksLimit: 6, callback: function (v) { return fmtSigned(v, Number.isInteger(v) ? 0 : 1); } } }
     });
-    $('#m-roll-gd').textContent = 'Actuel : ' + fmtSigned(lastVal(p.goalDiff), 2);
-    rollingLine('c-roll-score', p.score, T.us, ms, { label: 'Score', fmt: function (v) { return fmtNum(v); }, y: { grace: '10%' } });
-    $('#m-roll-score').textContent = 'Actuel : ' + fmtNum(lastVal(p.score));
+    $('#m-roll-gd').textContent = tr('prog.current', { v: fmtSigned(lastVal(p.goalDiff), 2) });
+    rollingLine('c-roll-score', p.score, T.us, ms, { label: tr('perf.score'), fmt: function (v) { return fmtNum(v); }, y: { grace: '10%' } });
+    $('#m-roll-score').textContent = tr('prog.current', { v: fmtNum(lastVal(p.score)) });
 
     // Small multiples (one series each) rather than 4 overlapping colored lines.
-    [['goals', 'Buts'], ['assists', 'Passes'], ['saves', 'Arrêts'], ['shots', 'Tirs']].forEach(function (x) {
-      var data = p[x[0]];
-      $('#mv-' + x[0]).textContent = fmtNum(lastVal(data), 2);
-      makeChart('c-roll-' + x[0], {
+    ['goals', 'assists', 'saves', 'shots'].forEach(function (key) {
+      var data = p[key], label = tr('perf.' + key);
+      $('#mv-' + key).textContent = fmtNum(lastVal(data), 2);
+      makeChart('c-roll-' + key, {
         type: 'line',
-        data: { labels: ms.map(function (m, i) { return i + 1; }), datasets: [{ label: x[1], data: data, borderColor: T.us, backgroundColor: alpha(T.us, 0.10), fill: 'origin',
+        data: { labels: ms.map(function (m, i) { return i + 1; }), datasets: [{ label: label, data: data, borderColor: T.us, backgroundColor: alpha(T.us, 0.10), fill: 'origin',
           pointHoverBackgroundColor: T.us, pointHoverBorderColor: T.surface, tension: 0.3, cubicInterpolationMode: 'monotone', spanGaps: true }] },
         options: {
           interaction: { mode: 'index', intersect: false },
@@ -1360,12 +1454,12 @@
           plugins: {
             crosshair: { enabled: true },
             tooltip: { displayColors: false, callbacks: {
-              title: function (it) { var m = ms[it[0].dataIndex]; return 'Match n°' + (it[0].dataIndex + 1) + ' · ' + fmtDate(m._t, true); },
-              label: function (it) { return x[1] + ' / match : ' + fmtNum(it.raw, 2); }
+              title: function (it) { var m = ms[it[0].dataIndex]; return tr('prog.matchNo', { i: it[0].dataIndex + 1 }) + ' · ' + fmtDate(m._t, true); },
+              label: function (it) { return tr('prog.perMatch', { label: label, v: fmtNum(it.raw, 2) }); }
             } }
           }
         }
-      }, hasData(data) ? null : 'Pas assez de matchs');
+      }, hasData(data) ? null : tr('prog.notEnoughShort'));
     });
   }
 
@@ -1373,22 +1467,22 @@
   function renderActivity(ms) {
     var a = computeActivity(ms, state.filters.period);
     var weekly = a.unit === 'week';
-    $('#act-sub').textContent = weekly ? 'Matchs joués et % de victoire par semaine' : 'Matchs joués et % de victoire par jour';
-    var labels = a.buckets.map(function (b) { return new Date(b.t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }); });
+    $('#act-sub').textContent = tr(weekly ? 'act.subWeek' : 'act.subDay');
+    var labels = a.buckets.map(function (b) { return fmtDay(b.t, { day: 'numeric', month: 'short' }); });
     var titleOf = function (i) {
       var b = a.buckets[i];
-      return weekly ? 'Semaine du ' + new Date(b.t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })
-        : new Date(b.t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+      return weekly ? tr('act.weekOf', { date: fmtDay(b.t, { day: 'numeric', month: 'long' }) })
+        : fmtDay(b.t, { weekday: 'long', day: 'numeric', month: 'long' });
     };
     var hasOther = a.buckets.some(function (b) { return b.other > 0; });
-    var items = [{ label: 'Victoires', color: T.win }, { label: 'Défaites', color: T.loss }];
-    if (hasOther) items.push({ label: 'Abandons', color: T.neutral });
+    var items = [{ label: tr('act.wins'), color: T.win }, { label: tr('act.losses'), color: T.loss }];
+    if (hasOther) items.push({ label: tr('act.abandons'), color: T.neutral });
     $('#lg-act').innerHTML = legendHtml(items);
     var ds = [
-      { label: 'Victoires', data: a.buckets.map(function (b) { return b.wins; }), backgroundColor: T.win },
-      { label: 'Défaites', data: a.buckets.map(function (b) { return b.losses; }), backgroundColor: T.loss }
+      { label: tr('act.wins'), data: a.buckets.map(function (b) { return b.wins; }), backgroundColor: T.win },
+      { label: tr('act.losses'), data: a.buckets.map(function (b) { return b.losses; }), backgroundColor: T.loss }
     ];
-    if (hasOther) ds.push({ label: 'Abandons', data: a.buckets.map(function (b) { return b.other; }), backgroundColor: T.neutral });
+    if (hasOther) ds.push({ label: tr('act.abandons'), data: a.buckets.map(function (b) { return b.other; }), backgroundColor: T.neutral });
     ds.forEach(function (d) { d.maxBarThickness = 24; d.borderColor = T.surface; d.borderWidth = { top: 2, bottom: 0, left: 0, right: 0 }; d.borderRadius = 3; d.borderSkipped = 'start'; d.stack = 's'; });
     makeChart('c-activity', {
       type: 'bar',
@@ -1398,90 +1492,95 @@
         scales: baseScales({ x: { stacked: true, ticks: { maxTicksLimit: 10, color: T.muted, maxRotation: 0 } }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0, color: T.muted, padding: 8, maxTicksLimit: 6 } } }),
         plugins: { tooltip: { filter: function (it) { return it.raw > 0; }, callbacks: {
           title: function (it) { return titleOf(it[0].dataIndex); },
-          label: function (it) { return ' ' + it.dataset.label + ' : ' + it.raw; },
-          footer: function (it) { var b = a.buckets[it[0].dataIndex]; return b.total + ' match' + (b.total > 1 ? 's' : '') + ' · ' + fmtPct(b.winrate) + ' de victoire'; }
+          label: function (it) { return ' ' + tr('fmt.labelValue', { label: it.dataset.label, v: it.raw }); },
+          footer: function (it) { var b = a.buckets[it[0].dataIndex]; return plural(b.total, 'match') + ' · ' + tr('goal.wonPct', { pct: fmtPct(b.winrate) }); }
         } } }
       }
-    }, a.buckets.length ? null : 'Aucune donnée');
+    }, a.buckets.length ? null : tr('common.noData'));
 
     var wr = a.buckets.map(function (b) { return b.winrate == null ? null : b.winrate * 100; });
     makeChart('c-activity-wr', {
       type: 'line',
-      data: { labels: labels, datasets: [{ label: '% victoire', data: wr, borderColor: alpha(T.us, 0.55), backgroundColor: T.us, spanGaps: true,
+      data: { labels: labels, datasets: [{ label: tr('prog.winrate'), data: wr, borderColor: alpha(T.us, 0.55), backgroundColor: T.us, spanGaps: true,
         pointRadius: a.buckets.length > 60 ? 2.5 : 4, pointBackgroundColor: T.us, pointBorderColor: T.surface, pointBorderWidth: 2, pointHoverRadius: 6,
         pointHoverBorderColor: T.surface, tension: 0, borderWidth: 1.5 }] },
       options: {
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
-        scales: baseScales({ x: { ticks: { maxTicksLimit: 6, color: T.muted, maxRotation: 0 } }, y: { min: 0, max: 100, ticks: { stepSize: 25, color: T.muted, padding: 8, callback: function (v) { return v + ' %'; } } } }),
+        scales: baseScales({ x: { ticks: { maxTicksLimit: 6, color: T.muted, maxRotation: 0 } }, y: { min: 0, max: 100, ticks: { stepSize: 25, color: T.muted, padding: 8, callback: function (v) { return pct(v); } } } }),
         plugins: { refLine: { value: 50 }, tooltip: { callbacks: {
           title: function (it) { return titleOf(it[0].dataIndex); },
-          label: function (it) { var b = a.buckets[it.dataIndex]; return ' ' + fmtPct(b.winrate) + ' (' + b.wins + ' V – ' + b.losses + ' D)'; }
+          label: function (it) { var b = a.buckets[it.dataIndex]; return ' ' + fmtPct(b.winrate) + ' (' + wlShort(b.wins, b.losses) + ')'; }
         } } }
       }
-    }, hasData(wr) ? null : 'Aucun match décidé sur la période');
+    }, hasData(wr) ? null : tr('act.noDecidedPeriod'));
   }
 
   /* ---------- render: goals ---------- */
   function renderGoals(ms) {
     var d = computeGoalDiffDist(ms);
-    $('#m-gd').textContent = d.n + ' match' + (d.n > 1 ? 's' : '') + ' décidé' + (d.n > 1 ? 's' : '');
+    $('#m-gd').textContent = tr('goals.decided', { n: d.n, v: fmtNum(d.n) });
     makeChart('c-gd', {
       type: 'bar',
       data: { labels: d.bins.map(function (b) { return b.label; }), datasets: [{
-        label: 'Matchs', data: d.bins.map(function (b) { return b.count; }), maxBarThickness: 36,
+        label: tr('kpi.matches'), data: d.bins.map(function (b) { return b.count; }), maxBarThickness: 36,
         backgroundColor: d.bins.map(function (b) { return b.diff > 0 ? T.us : b.diff < 0 ? T.them : T.neutral; })
       }] },
       options: {
-        scales: baseScales({ x: { title: { display: true, text: 'Écart final (vous − adversaires)', color: T.muted, font: { size: 11.5 } } }, y: { beginAtZero: true, ticks: { precision: 0, color: T.muted, padding: 8, maxTicksLimit: 6 } } }),
+        scales: baseScales({ x: { title: { display: true, text: tr('goals.marginAxis'), color: T.muted, font: { size: 11.5 } } }, y: { beginAtZero: true, ticks: { precision: 0, color: T.muted, padding: 8, maxTicksLimit: 6 } } }),
         plugins: { tooltip: { callbacks: {
-          title: function (it) { var b = d.bins[it[0].dataIndex]; return b.diff > 0 ? 'Victoire de ' + b.label.replace('+', '') + ' but' + (Math.abs(b.diff) > 1 ? 's' : '') : b.diff < 0 ? 'Défaite de ' + b.label.replace('−', '').replace('-', '') + ' but' + (Math.abs(b.diff) > 1 ? 's' : '') : 'Égalité'; },
-          label: function (it) { return ' ' + it.raw + ' match' + (it.raw > 1 ? 's' : '') + ' (' + fmtPct(ratio(it.raw, d.n)) + ')'; }
+          title: function (it) {
+            // Label "+3", "−2" or "≥ +5": keep the ≥/≤ and the number, drop the sign.
+            var b = d.bins[it[0].dataIndex], k = Math.abs(b.diff);
+            var goals = b.label.replace(/[+−-]/g, '').replace('≤', '≥') + ' ' + tr('unit.goal', { n: k });
+            return b.diff > 0 ? tr('goals.wonBy', { v: goals }) : b.diff < 0 ? tr('goals.lostBy', { v: goals }) : tr('goals.draw');
+          },
+          label: function (it) { return ' ' + plural(it.raw, 'match') + ' (' + fmtPct(ratio(it.raw, d.n)) + ')'; }
         } } }
       }
-    }, d.n ? null : 'Aucun match décidé');
+    }, d.n ? null : tr('goals.noDecided'));
 
     var g = computeGoalsPerMinute(ms);
-    $('#lg-gpm').innerHTML = legendHtml([{ label: 'Marqués', color: T.us }, { label: 'Encaissés', color: T.them }]);
+    $('#lg-gpm').innerHTML = legendHtml([{ label: tr('goals.scored'), color: T.us }, { label: tr('goals.conceded'), color: T.them }]);
     makeChart('c-gpm', {
       type: 'bar',
       data: { labels: g.labels, datasets: [
-        { label: 'Marqués', data: g.us, backgroundColor: T.us, maxBarThickness: 22, borderColor: T.surface, borderWidth: { left: 1, right: 1, top: 0, bottom: 0 }, borderSkipped: 'start' },
-        { label: 'Encaissés', data: g.them, backgroundColor: T.them, maxBarThickness: 22, borderColor: T.surface, borderWidth: { left: 1, right: 1, top: 0, bottom: 0 }, borderSkipped: 'start' }
+        { label: tr('goals.scored'), data: g.us, backgroundColor: T.us, maxBarThickness: 22, borderColor: T.surface, borderWidth: { left: 1, right: 1, top: 0, bottom: 0 }, borderSkipped: 'start' },
+        { label: tr('goals.conceded'), data: g.them, backgroundColor: T.them, maxBarThickness: 22, borderColor: T.surface, borderWidth: { left: 1, right: 1, top: 0, bottom: 0 }, borderSkipped: 'start' }
       ] },
       options: {
         interaction: { mode: 'index', intersect: false },
         datasets: { bar: { categoryPercentage: 0.6, barPercentage: 0.9 } },
-        scales: baseScales({ x: { title: { display: true, text: 'Minute de jeu', color: T.muted, font: { size: 11.5 } } }, y: { beginAtZero: true, ticks: { precision: 0, color: T.muted, padding: 8, maxTicksLimit: 6 } } }),
+        scales: baseScales({ x: { title: { display: true, text: tr('goals.minuteAxis'), color: T.muted, font: { size: 11.5 } } }, y: { beginAtZero: true, ticks: { precision: 0, color: T.muted, padding: 8, maxTicksLimit: 6 } } }),
         plugins: { tooltip: { callbacks: {
-          title: function (it) { var i = it[0].dataIndex; return i === 5 ? 'Prolongation' : 'Minute ' + g.labels[i]; },
-          label: function (it) { return ' ' + it.dataset.label + ' : ' + it.raw + ' (' + fmtNum(ratio(it.raw, g.matches), 2) + ' / match)'; }
+          title: function (it) { var i = it[0].dataIndex; return i === 5 ? tr('goals.overtime') : tr('goals.minute', { v: g.labels[i] }); },
+          label: function (it) { return ' ' + tr('fmt.labelValue', { label: it.dataset.label, v: it.raw }) + ' (' + tr('goals.perMatch', { v: fmtNum(ratio(it.raw, g.matches), 2) }) + ')'; }
         } } }
       }
-    }, g.goals ? null : 'Aucun but enregistré');
+    }, g.goals ? null : tr('goals.none'));
   }
 
   /* ---------- render: situations ---------- */
   function meterRow(label, r, cls) {
-    return '<div class="sit-row"><span>' + label + ' <span class="muted">· ' + r.n + ' match' + (r.n > 1 ? 's' : '') + '</span></span><b>' + fmtPct(r.wr) + '</b>' +
-      '<div class="meter ' + (cls || '') + '" role="img" aria-label="' + esc(fmtPct(r.wr)) + ' de victoire"><span style="width:' + (isNum(r.wr) ? (r.wr * 100).toFixed(1) : 0) + '%"></span></div></div>';
+    return '<div class="sit-row"><span>' + label + ' <span class="muted">· ' + plural(r.n, 'match') + '</span></span><b>' + fmtPct(r.wr) + '</b>' +
+      '<div class="meter ' + (cls || '') + '" role="img" aria-label="' + esc(tr('sit.wrAria', { v: fmtPct(r.wr) })) + '"><span style="width:' + (isNum(r.wr) ? (r.wr * 100).toFixed(1) : 0) + '%"></span></div></div>';
   }
+  function sitRow(label, v) { return '<div class="sit-row"><span>' + label + '</span><b>' + v + '</b></div>'; }
   function renderSituations(ms) {
     var s = computeSituations(ms);
     var html = '';
-    html += '<div class="card sit"><h3>Premier but</h3><div class="sit-rows">' +
-      meterRow('Marqué en premier', s.firstUs) + meterRow('Encaissé en premier', s.firstThem, 'them') + '</div>' +
-      '<div class="sit-foot">% de victoire selon qui ouvre le score' + (s.firstThem.wins ? ' · ' + s.firstThem.wins + ' remontada' + (s.firstThem.wins > 1 ? 's' : '') : '') + '</div></div>';
-    html += '<div class="card sit"><h3>Matchs serrés</h3><div class="sit-rows">' +
-      meterRow('Écart ≤ 1 but', s.close) + meterRow('Écart ≥ 3 buts', s.big) + '</div>' +
-      '<div class="sit-foot">' + fmtPct(s.closeShare) + ' de vos matchs se jouent à un but</div></div>';
-    html += '<div class="card sit"><h3>Prolongations</h3><div class="sit-rows">' + meterRow('En prolongation', s.ot) +
-      '<div class="sit-row"><span>Part des matchs</span><b>' + fmtPct(s.otShare) + '</b></div>' +
-      '<div class="sit-row"><span>Durée moyenne</span><b>' + (isNum(s.otAvgSeconds) ? fmtClock(s.otAvgSeconds) : '—') + '</b></div></div></div>';
-    html += '<div class="card sit"><h3>Forfaits &amp; abandons</h3><div class="sit-rows">' +
-      '<div class="sit-row"><span>Victoires par forfait adverse</span><b>' + s.forfeitWon + '</b></div>' +
-      '<div class="sit-row"><span>Défaites par forfait</span><b>' + s.forfeitLost + '</b></div>' +
-      '<div class="sit-row"><span>Matchs abandonnés</span><b>' + (state.filters.excludeAbandoned ? '<span class="muted" title="Filtre « Exclure abandons » actif">masqués</span>' : s.abandoned) + '</b></div></div>' +
-      '<div class="sit-foot">Forfait = fin avant la dernière seconde du temps réglementaire</div></div>';
+    html += '<div class="card sit"><h3>' + tr('sit.firstGoal') + '</h3><div class="sit-rows">' +
+      meterRow(tr('sit.scoredFirst'), s.firstUs) + meterRow(tr('sit.concededFirst'), s.firstThem, 'them') + '</div>' +
+      '<div class="sit-foot">' + tr('sit.firstGoalFoot') + (s.firstThem.wins ? ' · ' + tr('sit.comebacks', { n: s.firstThem.wins, v: fmtNum(s.firstThem.wins) }) : '') + '</div></div>';
+    html += '<div class="card sit"><h3>' + tr('sit.close') + '</h3><div class="sit-rows">' +
+      meterRow(tr('sit.margin1'), s.close) + meterRow(tr('sit.margin3'), s.big) + '</div>' +
+      '<div class="sit-foot">' + tr('sit.closeFoot', { pct: fmtPct(s.closeShare) }) + '</div></div>';
+    html += '<div class="card sit"><h3>' + tr('sit.ot') + '</h3><div class="sit-rows">' + meterRow(tr('sit.inOt'), s.ot) +
+      sitRow(tr('sit.otShare'), fmtPct(s.otShare)) +
+      sitRow(tr('sit.otLength'), isNum(s.otAvgSeconds) ? fmtClock(s.otAvgSeconds) : '—') + '</div></div>';
+    html += '<div class="card sit"><h3>' + tr('sit.forfeits') + '</h3><div class="sit-rows">' +
+      sitRow(tr('sit.forfeitWon'), s.forfeitWon) + sitRow(tr('sit.forfeitLost'), s.forfeitLost) +
+      sitRow(tr('sit.abandoned'), state.filters.excludeAbandoned ? '<span class="muted" title="' + esc(tr('sit.hiddenTip')) + '">' + tr('sit.hidden') + '</span>' : s.abandoned) + '</div>' +
+      '<div class="sit-foot">' + tr('sit.forfeitFoot') + '</div></div>';
     $('#situations').innerHTML = html;
   }
 
@@ -1493,17 +1592,17 @@
     var colors = buckets.map(function (b) { return b.n >= minN ? T.us : alpha(T.us, 0.35); });
     return makeChart(id, {
       type: 'bar',
-      data: { labels: buckets.map(function (b) { return b.label; }), datasets: [{ label: '% victoire', data: data, backgroundColor: colors, maxBarThickness: opts.thick || 24 }] },
+      data: { labels: buckets.map(function (b) { return b.label; }), datasets: [{ label: tr('prog.winrate'), data: data, backgroundColor: colors, maxBarThickness: opts.thick || 24 }] },
       options: {
         scales: baseScales({ x: { ticks: { color: T.muted, maxRotation: 0, autoSkip: true, autoSkipPadding: 6 }, title: opts.xTitle ? { display: true, text: opts.xTitle, color: T.muted, font: { size: 11.5 } } : undefined },
-          y: { min: 0, max: 100, ticks: { stepSize: 25, color: T.muted, padding: 8, callback: function (v) { return v + ' %'; } } } }),
+          y: { min: 0, max: 100, ticks: { stepSize: 25, color: T.muted, padding: 8, callback: function (v) { return pct(v); } } } }),
         plugins: { refLine: { value: 50 }, tooltip: { callbacks: {
           title: function (it) { return opts.title ? opts.title(it[0].dataIndex) : buckets[it[0].dataIndex].label; },
-          label: function (it) { var b = buckets[it.dataIndex]; return ' ' + fmtPct(b.wr) + ' de victoire'; },
-          footer: function (it) { var b = buckets[it[0].dataIndex]; return b.wins + ' V – ' + (b.n - b.wins) + ' D' + (b.n < minN ? ' · échantillon faible' : ''); }
+          label: function (it) { var b = buckets[it.dataIndex]; return ' ' + tr('mental.wrOf', { v: fmtPct(b.wr) }); },
+          footer: function (it) { var b = buckets[it[0].dataIndex]; return wlShort(b.wins, b.n - b.wins) + (b.n < minN ? ' · ' + tr('common.smallSample') : ''); }
         } } }
       }
-    }, buckets.some(function (b) { return b.n > 0; }) ? null : 'Pas encore de données');
+    }, buckets.some(function (b) { return b.n > 0; }) ? null : tr('goal.noData'));
   }
 
   function renderMental(ms) {
@@ -1512,30 +1611,30 @@
     var verdict, bad = false;
     if (aw.n >= 10 && al.n >= 10) {
       var gap = (aw.wr - al.wr) * 100;
-      if (gap >= 5) { bad = true; verdict = 'Vous gagnez <b>' + fmtNum(gap) + ' pts de moins</b> après une défaite. Une courte pause après un revers pourrait aider.'; }
-      else if (gap <= -5) verdict = 'Vous rebondissez bien : <b>' + fmtNum(-gap) + ' pts de mieux</b> après une défaite qu’après une victoire.';
-      else verdict = 'Pas d’effet « tilt » notable : votre % de victoire reste stable après une défaite.';
+      if (gap >= 5) { bad = true; verdict = tr('mental.tilt', { v: fmtNum(gap) }); }
+      else if (gap <= -5) verdict = tr('mental.bounce', { v: fmtNum(-gap) });
+      else verdict = tr('mental.steady');
     } else {
-      verdict = 'Il faut au moins 10 matchs dans chaque cas pour une analyse fiable.';
+      verdict = tr('mental.needMore');
     }
     var best = m.bySession.filter(function (b) { return b.n >= 5 && b.wr != null; }).sort(function (a, b) { return b.wr - a.wr; })[0];
     $('#tilt').innerHTML =
-      '<h3>Après le match précédent (même session)</h3>' +
+      '<h3>' + tr('mental.afterPrev') + '</h3>' +
       '<div class="tilt-pair">' +
-      '<div class="tilt-box"><span class="lbl"><span class="res win">V</span>Après une victoire</span><div class="val">' + fmtPct(aw.wr) + '</div><span class="n">' + aw.n + ' match' + (aw.n > 1 ? 's' : '') + '</span></div>' +
-      '<div class="tilt-box"><span class="lbl"><span class="res loss">D</span>Après une défaite</span><div class="val">' + fmtPct(al.wr) + '</div><span class="n">' + al.n + ' match' + (al.n > 1 ? 's' : '') + '</span></div>' +
+      '<div class="tilt-box"><span class="lbl"><span class="res win">' + tr('res.win.short') + '</span>' + tr('mental.afterWin') + '</span><div class="val">' + fmtPct(aw.wr) + '</div><span class="n">' + plural(aw.n, 'match') + '</span></div>' +
+      '<div class="tilt-box"><span class="lbl"><span class="res loss">' + tr('res.loss.short') + '</span>' + tr('mental.afterLoss') + '</span><div class="val">' + fmtPct(al.wr) + '</div><span class="n">' + plural(al.n, 'match') + '</span></div>' +
       '</div>' +
       '<div class="tilt-verdict' + (bad ? ' bad' : '') + '">' + verdict + '</div>' +
-      '<div class="tilt-sessions"><div><b>' + m.sessions + '</b>sessions</div><div><b>' + fmtNum(m.avgSessionLen, 1) + '</b>matchs / session</div><div><b>' + (best ? 'n°' + best.label : '—') + '</b>meilleur match de session</div></div>';
-    $('#m-sess').textContent = 'barres pâles : < 5 matchs';
-    wrBars('c-session', m.bySession, { xTitle: 'N° du match dans la session', title: function (i) { return i === 7 ? '8e match et suivants' : (i === 0 ? '1er' : (i + 1) + 'e') + ' match de la session'; } });
+      '<div class="tilt-sessions"><div><b>' + m.sessions + '</b>' + tr('unit.session', { n: m.sessions }) + '</div><div><b>' + fmtNum(m.avgSessionLen, 1) + '</b>' + tr('mental.perSession') + '</div><div><b>' + (best ? tr('mental.bestNo', { v: best.label }) : '—') + '</b>' + tr('mental.bestOfSession') + '</div></div>';
+    $('#m-sess').textContent = tr('mental.pale');
+    wrBars('c-session', m.bySession, { xTitle: tr('mental.matchNoAxis'), title: function (i) { return i === 7 ? tr('mental.eighthPlus') : tr('mental.nthMatch', { v: ordinal(i + 1) }); } });
     // Day starts at 6h so late-night sessions stay contiguous; trim empty hours at both ends.
     var hours = m.byHour.slice(6).concat(m.byHour.slice(0, 6)).map(function (b, i) { return Object.assign({ h: (i + 6) % 24 }, b); });
     var firstH = hours.findIndex(function (b) { return b.n > 0; });
     var lastH = hours.length - 1 - hours.slice().reverse().findIndex(function (b) { return b.n > 0; });
     if (firstH >= 0) hours = hours.slice(Math.max(0, firstH - 1), Math.min(hours.length, lastH + 2));
-    wrBars('c-hour', hours, { thick: 22, title: function (i) { var h = hours[i].h; return 'De ' + h + 'h à ' + ((h + 1) % 24) + 'h'; } });
-    wrBars('c-weekday', m.byWeekday, { thick: 32, title: function (i) { return ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'][i]; } });
+    wrBars('c-hour', hours, { thick: 22, title: function (i) { var h = hours[i].h; return tr('time.fromTo', { a: h, b: (h + 1) % 24 }); } });
+    wrBars('c-weekday', m.byWeekday, { thick: 32, title: function (i) { return cap(weekdayName(i)); } });
   }
 
   /* ---------- render: days & hours ---------- */
@@ -1544,36 +1643,43 @@
     var d = b.delta, sign = d > 0 ? '+' : d < 0 ? '−' : '±';
     return '<div class="card kpi time-tile ' + cls + '"><span class="kpi-label">' + label + '</span>' +
       '<span class="kpi-value">' + value + '</span>' +
-      '<span class="kpi-sub"><b>' + fmtPct(b.wr) + '</b> de victoires · ' + plural(b.n, 'match') +
-      '<br><span class="' + (d >= 0 ? 'pos' : 'neg') + '">' + sign + fmtNum(Math.abs(d)) + ' pts</span> vs votre moyenne</span></div>';
+      '<span class="kpi-sub">' + tr('goal.wonPct', { pct: '<b>' + fmtPct(b.wr) + '</b>' }) + ' · ' + plural(b.n, 'match') +
+      '<br>' + tr('time.vsAvg', { v: '<span class="' + (d >= 0 ? 'pos' : 'neg') + '">' + sign + fmtNum(Math.abs(d)) + ' pts</span>' }) + '</span></div>';
   }
   function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+  /** "1er", "2e" / "1st", "2nd". */
+  function ordinal(n) {
+    if (I18N.getLang() === 'fr') return n + (n === 1 ? 'er' : 'e');
+    var s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  }
   function renderTime(ms) {
     var t = computeTimeInsights(ms);
     var sum;
-    if (!t.total) sum = 'Pas encore de match sur cette sélection.';
-    else if (!t.enough) sum = 'Encore ' + plural(TIME_MIN_GAMES - t.total, 'match') + ' à jouer sur cette sélection pour une analyse fiable des jours et horaires.';
+    if (!t.total) sum = tr('time.noMatch');
+    else if (!t.enough) sum = tr('time.needMore', { v: plural(TIME_MIN_GAMES - t.total, 'match') });
     else {
       var parts = [];
-      if (t.bestDay) parts.push('le <b>' + t.bestDay.name + '</b>');
+      if (t.bestDay) parts.push(tr('time.onDay', { day: '<b>' + t.bestDay.name + '</b>' }));
       if (t.bestWindow) parts.push('<b>' + t.bestWindow.label + '</b>');
-      sum = parts.length ? 'En général, vous gagnez le plus ' + parts.join(', et ') + '.' : 'Pas d’écart marqué selon le jour ou l’heure pour l’instant.';
+      sum = parts.length ? tr('time.winMost', { v: parts.join(tr('time.andComma')) }) : tr('time.noDiff');
       if (t.worstDay || t.worstWindow) {
         var bad = [];
-        if (t.worstDay) bad.push('le ' + t.worstDay.name);
+        if (t.worstDay) bad.push(tr('time.onDay', { day: t.worstDay.name }));
         if (t.worstWindow) bad.push(t.worstWindow.label);
-        sum += ' Moins bien ' + bad.join(' et ') + '.';
+        sum += ' ' + tr('time.lessSo', { v: bad.join(tr('time.and')) });
       }
     }
-    $('#time-summary').innerHTML = sum + (t.total ? ' <span class="muted">Moyenne : ' + fmtPct(t.wr) + ' sur ' + plural(t.total, 'match') + ' (filtres ci-dessus appliqués).</span>' : '');
-    var few = t.enough ? 'Pas d’écart marqué selon le jour' : 'Pas encore assez de matchs';
-    var fewH = t.enough ? 'Pas d’écart marqué selon l’heure' : 'Pas encore assez de matchs';
+    $('#time-summary').innerHTML = sum + (t.total ? ' <span class="muted">' + tr('time.average', { pct: fmtPct(t.wr), v: plural(t.total, 'match') }) + '</span>' : '');
+    var few = t.enough ? tr('time.noDiffDay') : tr('time.notEnough');
+    var fewH = t.enough ? tr('time.noDiffHour') : tr('time.notEnough');
+    var slot = function (w) { return w ? tr('time.slot', { a: w.from, b: (w.from + w.len) % 24 }) : ''; };
     $('#time-tiles').innerHTML =
-      timeTile('best', 'Meilleur jour', t.bestDay ? cap(t.bestDay.name) : '', t.bestDay, few) +
-      timeTile('worst', 'Jour le plus difficile', t.worstDay ? cap(t.worstDay.name) : '', t.worstDay, few) +
-      timeTile('best', 'Meilleur créneau', t.bestWindow ? t.bestWindow.from + 'h – ' + ((t.bestWindow.from + t.bestWindow.len) % 24) + 'h' : '', t.bestWindow, fewH) +
-      timeTile('worst', 'Créneau le plus difficile', t.worstWindow ? t.worstWindow.from + 'h – ' + ((t.worstWindow.from + t.worstWindow.len) % 24) + 'h' : '', t.worstWindow, fewH);
-    $('#m-busy').textContent = t.busiestDay && t.busiestDay.n ? 'Jour le plus joué : ' + t.busiestDay.name + ' (' + plural(t.busiestDay.n, 'match') + ')' : '';
+      timeTile('best', tr('time.bestDay'), t.bestDay ? cap(t.bestDay.name) : '', t.bestDay, few) +
+      timeTile('worst', tr('time.worstDay'), t.worstDay ? cap(t.worstDay.name) : '', t.worstDay, few) +
+      timeTile('best', tr('time.bestSlot'), slot(t.bestWindow), t.bestWindow, fewH) +
+      timeTile('worst', tr('time.worstSlot'), slot(t.worstWindow), t.worstWindow, fewH);
+    $('#m-busy').textContent = t.busiestDay && t.busiestDay.n ? tr('time.busiest', { day: t.busiestDay.name, v: plural(t.busiestDay.n, 'match') }) : '';
 
     // Heatmap: weekday rows x hour columns (from 6h), trimmed to the played hours.
     var order = [];
@@ -1585,12 +1691,12 @@
       cols = order.slice(a, z + 1);
     }
     var minCell = 3;
-    var head = '<div class="hm-corner"></div>' + cols.map(function (h) { return '<div class="hm-h">' + h + 'h</div>'; }).join('');
+    var head = '<div class="hm-corner"></div>' + cols.map(function (h) { return '<div class="hm-h">' + h + '</div>'; }).join('');
     var rows = t.grid.map(function (row, d) {
-      return '<div class="hm-d">' + cap(WEEKDAY_NAMES[d]).slice(0, 3) + '.</div>' + cols.map(function (h) {
+      return '<div class="hm-d">' + tr('weekdays.short')[d] + '</div>' + cols.map(function (h) {
         var c = row[h];
-        var tip = cap(WEEKDAY_NAMES[d]) + ' ' + h + 'h–' + ((h + 1) % 24) + 'h · ' +
-          (c.n ? fmtPct(c.wr) + ' de victoires (' + c.wins + ' V – ' + (c.n - c.wins) + ' D)' + (c.n < minCell ? ' · échantillon faible' : '') : 'aucun match');
+        var tip = cap(weekdayName(d)) + ' ' + tr('time.range', { a: h, b: (h + 1) % 24 }) + ' · ' +
+          (c.n ? tr('goal.wonPct', { pct: fmtPct(c.wr) }) + ' (' + wlShort(c.wins, c.n - c.wins) + ')' + (c.n < minCell ? ' · ' + tr('common.smallSample') : '') : tr('time.noMatchCell'));
         var style = '', cls = 'hm-c';
         if (!c.n) cls += ' empty';
         else if (c.n < minCell) cls += ' few';
@@ -1606,7 +1712,7 @@
     }).join('');
     var grid = $('#time-heatmap');
     grid.style.setProperty('--hm-cols', cols.length);
-    grid.innerHTML = t.total ? head + rows : '<p class="muted small">Pas encore de données.</p>';
+    grid.innerHTML = t.total ? head + rows : '<p class="muted small">' + tr('goal.noData') + '.</p>';
   }
 
   /* ---------- render: mechanics ---------- */
@@ -1622,7 +1728,7 @@
         interaction: { mode: 'index', intersect: false },
         layout: { padding: { top: 3, bottom: 1 } },
         scales: { x: { display: false }, y: { display: false, grace: '15%' } },
-        plugins: { tooltip: { displayColors: false, callbacks: { title: function () { return ''; }, label: function (it) { return label + ' : ' + fmtV(it.raw); } } } }
+        plugins: { tooltip: { displayColors: false, callbacks: { title: function () { return ''; }, label: function (it) { return tr('fmt.labelValue', { label: label, v: fmtV(it.raw) }); } } } }
       }
     });
   }
@@ -1630,18 +1736,18 @@
   function renderMechanics(ms) {
     var mc = computeMechanics(ms);
     var box = $('#mechanics');
-    $('#mech-sub').textContent = mc.n ? 'Moyennes sur ' + mc.n + ' match' + (mc.n > 1 ? 's' : '') + ' avec données · courbe = tendance glissante 20 matchs' : 'Aucune donnée de mouvement (disponible seulement quand le jeu les transmet)';
+    $('#mech-sub').textContent = mc.n ? tr('mech.sub', { v: plural(mc.n, 'match') }) : tr('mech.none');
     box.innerHTML = mc.metrics.map(function (m, i) {
       var v = m.unit === '%' ? fmtPct100(m.avg, m.digits) : fmtNum(m.avg, m.digits) + (m.unit ? '<span class="unit">' + m.unit + '</span>' : '');
-      var tr = '';
+      var trend = '';
       if (isNum(m.trend)) {
         var good = m.higherBetter == null ? null : (m.trend > 0) === m.higherBetter;
         var small = Math.abs(m.trend) < Math.pow(10, -m.digits) * 0.5;
-        tr = small ? '≈ stable vs 20 précédents'
-          : '<span class="' + (good == null ? '' : good ? 'up' : 'down') + '">' + (m.trend >= 0 ? '▲ ' : '▼ ') + fmtSigned(m.trend, m.digits) + (m.unit === '%' ? ' pt' : m.unit ? ' ' + m.unit : '') + '</span> vs 20 précédents';
-      } else tr = m.n ? m.n + ' match' + (m.n > 1 ? 's' : '') : 'pas de données';
+        trend = small ? tr('mech.stable')
+          : tr('mech.vsPrev', { v: '<span class="' + (good == null ? '' : good ? 'up' : 'down') + '">' + (m.trend >= 0 ? '▲ ' : '▼ ') + fmtSigned(m.trend, m.digits) + (m.unit === '%' ? ' pt' : m.unit ? ' ' + m.unit : '') + '</span>' });
+      } else trend = m.n ? plural(m.n, 'match') : tr('mech.noData');
       return '<div class="card mech"><span class="kpi-label">' + esc(m.label) + '</span><span class="kpi-value">' + v + '</span>' +
-        '<span class="trend">' + tr + '</span><div class="spark"><canvas id="sp-mech-' + i + '"></canvas></div></div>';
+        '<span class="trend">' + trend + '</span><div class="spark"><canvas id="sp-mech-' + i + '"></canvas></div></div>';
     }).join('');
     mc.metrics.forEach(function (m, i) {
       var cv = document.getElementById('sp-mech-' + i);
@@ -1652,18 +1758,20 @@
     var s = mc.split;
     var tot = (s.ground || 0) + (s.wall || 0) + (s.air || 0);
     var segs = [
-      { label: 'Au sol', v: s.ground, color: T.series[0] },
-      { label: 'Sur les murs', v: s.wall, color: T.series[1] },
-      { label: 'En l’air', v: s.air, color: T.series[2] }
+      { label: tr('mech.ground_pct'), v: s.ground, color: T.series[0] },
+      { label: tr('mech.wall_pct'), v: s.wall, color: T.series[1] },
+      { label: tr('mech.air_split'), v: s.air, color: T.series[2] }
     ];
+    var fact = function (label, v) { return '<span>' + label + ' <b>' + v + '</b></span>'; };
     $('#split').innerHTML = tot > 0 ?
-      '<div class="split-head"><span class="card-title">Répartition du temps</span><span class="legend">' +
+      '<div class="split-head"><span class="card-title">' + tr('mech.split') + '</span><span class="legend">' +
       segs.map(function (g) { return '<span><i style="background:' + g.color + '"></i>' + g.label + ' ' + fmtPct100(g.v, 0) + '</span>'; }).join('') + '</span></div>' +
-      '<div class="split-bar">' + segs.map(function (g) { return '<span style="width:' + ((g.v || 0) / tot * 100).toFixed(2) + '%;background:' + g.color + '" title="' + esc(g.label + ' : ' + fmtPct100(g.v, 1)) + '"></span>'; }).join('') + '</div>' +
-      '<div class="detail-facts"><span>En boost <b>' + fmtPct100(mc.boostingPct, 1) + '</b></span><span>À 100 boost <b>' + fmtPct100(mc.fullBoostPct, 1) + '</b></span>' +
-      '<span>Powerslide <b>' + fmtPct100(mc.powerslidePct, 1) + '</b></span><span>Temps détruit <b>' + fmtNum(mc.demolishedS, 1) + ' s</b> / match</span>' +
-      '<span>Frappe la plus puissante <b>' + fmtNum(mc.maxHitKmh) + ' km/h</b></span></div>'
-      : '<span class="muted small">Répartition sol / murs / air indisponible pour cette sélection.</span>';
+      '<div class="split-bar">' + segs.map(function (g) { return '<span style="width:' + ((g.v || 0) / tot * 100).toFixed(2) + '%;background:' + g.color + '" title="' + esc(tr('fmt.labelValue', { label: g.label, v: fmtPct100(g.v, 1) })) + '"></span>'; }).join('') + '</div>' +
+      '<div class="detail-facts">' + fact(tr('mech.boosting_pct'), fmtPct100(mc.boostingPct, 1)) + fact(tr('mech.full_boost_pct'), fmtPct100(mc.fullBoostPct, 1)) +
+      fact(tr('mech.powerslide_pct'), fmtPct100(mc.powerslidePct, 1)) +
+      '<span>' + tr('mech.demolished_s') + ' <b>' + fmtNum(mc.demolishedS, 1) + ' s</b> ' + tr('mech.perMatch') + '</span>' +
+      fact(tr('mech.hardestHit'), fmtNum(mc.maxHitKmh) + ' km/h') + '</div>'
+      : '<span class="muted small">' + tr('mech.noSplit') + '</span>';
   }
 
   /* ---------- render: statfeed ---------- */
@@ -1681,78 +1789,85 @@
           y: { grid: { display: false }, border: { color: T.axis }, ticks: { color: T['text-2'], font: { size: 12.5 } } }
         },
         plugins: { tooltip: { displayColors: false, callbacks: {
-          label: function (it) { var r = rows[it.dataIndex]; return r.count + ' au total · ' + fmtNum(r.perMatch, 2) + ' par match'; },
-          footer: function (it) { var r = rows[it[0].dataIndex]; return r.label !== r.key ? 'Événement : ' + r.key : ''; }
+          label: function (it) { var r = rows[it.dataIndex]; return tr('feed.total', { v: r.count, p: fmtNum(r.perMatch, 2) }); },
+          footer: function (it) { var r = rows[it[0].dataIndex]; return r.label !== r.key ? tr('feed.event', { v: r.key }) : ''; }
         } } }
       }
-    }, rows.length ? null : 'Aucun événement spécial pour l’instant');
+    }, rows.length ? null : tr('feed.none'));
   }
 
   /* ---------- render: tables ---------- */
   function wrCell(wr) {
     return '<div class="wr-cell"><span class="num">' + fmtPct(wr) + '</span><span class="wr-bar"><span style="width:' + (isNum(wr) ? (wr * 100).toFixed(1) : 0) + '%"></span></span></div>';
   }
+  function wlHead() { return tr('res.win.short') + '–' + tr('res.loss.short'); }
   function renderArenas(ms) {
     var all = computeArenas(ms);
     var rows = all.slice(0, 12);
     var restN = all.slice(12).reduce(function (t, a) { return t + a.n; }, 0);
-    $('#t-arenas').innerHTML = '<thead><tr><th>Arène</th><th class="r">Matchs</th><th class="r hide-mobile">V–D</th><th class="r">% victoire</th><th class="r">Diff.</th></tr></thead><tbody>' +
+    var others = all.length - rows.length;
+    $('#t-arenas').innerHTML = '<thead><tr><th>' + tr('tbl.arena') + '</th><th class="r">' + tr('kpi.matches') + '</th><th class="r hide-mobile">' + wlHead() + '</th><th class="r">' + tr('kpi.winrate') + '</th><th class="r">' + tr('tbl.diff') + '</th></tr></thead><tbody>' +
       (rows.length ? rows.map(function (a) {
         return '<tr><td class="name">' + esc(a.name) + '</td><td class="r">' + a.n + '</td><td class="r hide-mobile">' + a.wins + '–' + a.losses + '</td><td class="r">' + wrCell(a.wr) + '</td><td class="r">' + fmtSigned(a.gdAvg, 1) + '</td></tr>';
-      }).join('') + (restN ? '<tr><td class="muted" colspan="5">+ ' + (all.length - rows.length) + ' autre' + (all.length - rows.length > 1 ? 's' : '') + ' arène' + (all.length - rows.length > 1 ? 's' : '') + ' (' + restN + ' match' + (restN > 1 ? 's' : '') + ')</td></tr>' : '')
-        : '<tr class="empty-row"><td colspan="5">Aucune arène</td></tr>') + '</tbody>';
+      }).join('') + (restN ? '<tr><td class="muted" colspan="5">' + tr('tbl.otherArenas', { n: others, v: others, m: plural(restN, 'match') }) + '</td></tr>' : '')
+        : '<tr class="empty-row"><td colspan="5">' + tr('tbl.noArena') + '</td></tr>') + '</tbody>';
   }
   function renderMates(ms) {
     var rows = computeTeammates(ms, 3).slice(0, 15);
     var overall = wl(ms).wr;
-    $('#t-mates').innerHTML = '<thead><tr><th>Coéquipier</th><th class="r">Matchs</th><th class="r hide-mobile">V–D</th><th class="r">% victoire</th><th class="r" title="Écart avec votre % de victoire moyen">vs moy.</th><th class="r hide-mobile">Buts / match</th></tr></thead><tbody>' +
+    $('#t-mates').innerHTML = '<thead><tr><th>' + tr('tbl.mate') + '</th><th class="r">' + tr('kpi.matches') + '</th><th class="r hide-mobile">' + wlHead() + '</th><th class="r">' + tr('kpi.winrate') + '</th><th class="r" title="' + esc(tr('tbl.vsAvgTip')) + '">' + tr('tbl.vsAvg') + '</th><th class="r hide-mobile">' + tr('tbl.goalsPer') + '</th></tr></thead><tbody>' +
       (rows.length ? rows.map(function (t) {
         var d = isNum(t.wr) && isNum(overall) ? (t.wr - overall) * 100 : null;
         return '<tr><td class="name">' + playerName(t.name, t.pid) + '</td><td class="r">' + t.n + '</td><td class="r hide-mobile">' + t.wins + '–' + t.losses + '</td><td class="r">' + wrCell(t.wr) + '</td>' +
           '<td class="r">' + (d == null ? '—' : fmtSigned(d) + ' pts') + '</td><td class="r hide-mobile">' + fmtNum(t.goalsPer, 2) + '</td></tr>';
-      }).join('') : '<tr class="empty-row"><td colspan="6">Aucun coéquipier avec au moins 3 matchs ensemble sur cette sélection</td></tr>') + '</tbody>';
+      }).join('') : '<tr class="empty-row"><td colspan="6">' + tr('tbl.noMate') + '</td></tr>') + '</tbody>';
   }
 
   function tagOptions(selected) {
     var tags = TAGS.slice();
     if (selected && tags.indexOf(selected) < 0) tags.push(selected);
-    return tags.map(function (t) { return '<option value="' + esc(t) + '"' + (t === selected ? ' selected' : '') + '>' + esc(TAG_LABELS[t] || t) + '</option>'; }).join('');
+    return tags.map(function (t) { return '<option value="' + esc(t) + '"' + (t === selected ? ' selected' : '') + '>' + esc(tagLabel(t)) + '</option>'; }).join('');
   }
-  var RES = { win: ['V', 'Victoire'], loss: ['D', 'Défaite'], abandoned: ['A', 'Abandonné'] };
   var TRASH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>';
+  /** [badge letter, label] of a result. */
+  function resText(result) {
+    return result === 'win' || result === 'loss' || result === 'abandoned' ? [tr('res.' + result + '.short'), tr('res.' + result)] : ['?', result || tr('common.unknown')];
+  }
 
   function renderMatches(ms) {
     var list = ms.slice().reverse();
     var shown = list.slice(0, state.shown);
     var cols = 9;
-    var html = '<thead><tr><th style="width:28px"></th><th>Date</th><th>Mode</th><th class="c">Rés.</th><th class="c">Score</th><th class="r hide-mobile">B / P / A</th><th class="r hide-mobile">Points</th><th class="hide-mobile">Type</th><th style="width:40px"></th></tr></thead><tbody>';
-    if (!shown.length) html += '<tr class="empty-row"><td colspan="' + cols + '">Aucun match pour ces filtres</td></tr>';
+    var html = '<thead><tr><th style="width:28px"></th><th>' + tr('tbl.date') + '</th><th>' + tr('tbl.mode') + '</th><th class="c">' + tr('tbl.res') + '</th><th class="c">' + tr('perf.score') + '</th>' +
+      '<th class="r hide-mobile" title="' + esc(tr('tbl.gasTip')) + '">' + tr('tbl.gas') + '</th><th class="r hide-mobile">' + tr('tbl.points') + '</th><th class="hide-mobile">' + tr('tbl.type') + '</th><th style="width:40px"></th></tr></thead><tbody>';
+    if (!shown.length) html += '<tr class="empty-row"><td colspan="' + cols + '">' + tr('tbl.noMatch') + '</td></tr>';
     shown.forEach(function (m) {
-      var r = RES[m.result] || ['?', m.result || 'Inconnu'];
+      var r = resText(m.result);
       var mm = m.me || {};
       var open = !!state.open[m.id];
       var chips = [];
-      if (m.overtime) chips.push('<span class="chip" title="Prolongation">Prol.</span>');
-      if (m.forfeit) chips.push('<span class="chip" title="Fin par forfait">Forfait</span>');
+      if (m.overtime) chips.push('<span class="chip" title="' + esc(tr('goals.overtime')) + '">' + tr('goals.ot') + '</span>');
+      if (m.forfeit) chips.push('<span class="chip" title="' + esc(tr('badge.forfeitTip')) + '">' + tr('badge.forfeit') + '</span>');
       if (m.mvp) chips.push('<span class="chip mvp">MVP</span>');
-      if (m.online === false) chips.push('<span class="chip">Hors ligne</span>');
+      if (m.online === false) chips.push('<span class="chip">' + tr('badge.offline') + '</span>');
       html += '<tr class="row' + (open ? ' open' : '') + '" data-id="' + m.id + '" tabindex="0" aria-expanded="' + open + '">' +
         '<td><span class="caret">›</span></td>' +
-        '<td class="nowrap"><a class="row-link" href="#/match/' + m.id + '" title="Ouvrir la page du match">' + esc(fmtDate(m._t, true)) + '</a></td>' +
+        '<td class="nowrap"><a class="row-link" href="' + href('match/' + m.id) + '" title="' + esc(tr('tbl.openMatch')) + '">' + esc(fmtDate(m._t, true)) + '</a></td>' +
         '<td><div>' + esc(m.mode || '—') + (m.variant && m.variant !== 'Soccar' ? ' ' + esc(m.variant) : '') + ' <span class="muted hide-mobile">· ' + esc(prettyArena(m.arena)) + '</span></div>' + (chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '') + '</td>' +
         '<td class="c"><span class="res ' + esc(m.result) + '" title="' + esc(r[1]) + '">' + r[0] + '</span></td>' +
         '<td class="c"><span class="score">' + fmtNum(m.team_score) + '<span class="sep">–</span>' + fmtNum(m.opp_score) + '</span></td>' +
         '<td class="r hide-mobile num">' + fmtNum(mm.goals) + ' / ' + fmtNum(mm.assists) + ' / ' + fmtNum(mm.saves) + '</td>' +
         '<td class="r hide-mobile num">' + fmtNum(mm.score) + '</td>' +
-        '<td class="hide-mobile"><select class="select tag-select" data-tag-for="' + m.id + '" aria-label="Type de match">' + tagOptions(m.tag) + '</select></td>' +
-        '<td><button type="button" class="del-btn" data-del="' + m.id + '" title="Supprimer ce match" aria-label="Supprimer ce match">' + TRASH + '</button></td></tr>';
+        (readOnly() ? '<td class="hide-mobile muted">' + esc(tagLabel(m.tag)) + '</td><td></td></tr>'
+          : '<td class="hide-mobile"><select class="select tag-select" data-tag-for="' + m.id + '" aria-label="' + esc(tr('tbl.matchType')) + '">' + tagOptions(m.tag) + '</select></td>' +
+            '<td><button type="button" class="del-btn" data-del="' + m.id + '" title="' + esc(tr('tbl.delete')) + '" aria-label="' + esc(tr('tbl.delete')) + '">' + TRASH + '</button></td></tr>');
       if (open) html += '<tr class="detail"><td colspan="' + cols + '">' + matchDetail(m) + '</td></tr>';
     });
     html += '</tbody>';
     $('#t-matches').innerHTML = html;
     var more = $('#more-matches');
     more.hidden = list.length <= state.shown;
-    more.textContent = 'Afficher plus (' + (list.length - Math.min(state.shown, list.length)) + ' restants)';
+    more.textContent = tr('tbl.showMore', { v: list.length - Math.min(state.shown, list.length) });
   }
 
   function goalTime(m, g) {
@@ -1769,11 +1884,21 @@
     var tl = '<div class="timeline" aria-hidden="true"><div class="axis"></div>';
     if (m.overtime) tl += '<div class="ot-zone" style="left:' + (reg / total * 100).toFixed(2) + '%;right:0"></div>';
     for (var mi = 0; mi * 60 <= reg; mi++) tl += '<span class="tick" style="left:' + (mi * 60 / total * 100).toFixed(2) + '%">' + mi + '′</span>';
-    if (m.overtime && total > reg + 30) tl += '<span class="tick" style="left:' + ((reg + (total - reg) / 2) / total * 100).toFixed(2) + '%">Prol.</span>';
+    if (m.overtime && total > reg + 30) tl += '<span class="tick" style="left:' + ((reg + (total - reg) / 2) / total * 100).toFixed(2) + '%">' + tr('goals.ot') + '</span>';
     goals.forEach(function (g) {
       tl += '<span class="g ' + (g.team === 'us' ? 'us' : 'them') + (g.me_scored ? ' me' : '') + '" style="left:' + (Math.min(1, num(g.t) / total) * 100).toFixed(2) + '%" title="' + esc(goalTime(m, g) + ' · ' + (g.scorer || '?')) + '"></span>';
     });
     return tl + '</div>';
+  }
+  function goalItems(m, goals) {
+    var us = 0, them = 0;
+    return goals.map(function (g) {
+      if (g.team === 'us') us++; else them++;
+      return '<li><span class="t">' + goalTime(m, g) + '</span><span class="d" style="background:' + (g.team === 'us' ? 'var(--us)' : 'var(--them)') + '"></span>' +
+        '<span class="who">' + esc(g.scorer || '?') + (g.me_scored ? ' <span class="chip">' + tr('common.you') + '</span>' : '') + (g.assister ? ' <small>· ' + tr('match.assist', { v: esc(g.assister) }) + '</small>' : '') +
+        (isNum(g.speed) && g.speed > 0 ? ' <small>· ' + fmtNum(goalKmh(g.speed)) + ' km/h</small>' : '') + '</span>' +
+        '<span class="sc">' + us + '–' + them + '</span></li>';
+    }).join('');
   }
   function matchDetail(m) {
     var players = (m.players || []).slice();
@@ -1782,96 +1907,104 @@
     function prow(p) {
       return '<tr class="' + (p.is_me ? 'me' : '') + '"><td>' + playerName(p.name, p.primary_id) + '</td><td>' + fmtNum(p.score) + '</td><td>' + fmtNum(p.goals) + '</td><td>' + fmtNum(p.assists) + '</td><td>' + fmtNum(p.saves) + '</td><td class="hide-mobile">' + fmtNum(p.shots) + '</td><td class="hide-mobile">' + fmtNum(p.demos) + '</td></tr>';
     }
-    var sb = '<table class="scoreboard"><thead><tr><th>Joueur</th><th>Pts</th><th>B</th><th>P</th><th>A</th><th class="hide-mobile">Tirs</th><th class="hide-mobile">Démo</th></tr></thead><tbody>' +
-      '<tr class="team-row"><td colspan="7"><span class="team-dot" style="background:var(--us)"></span>Votre équipe · ' + fmtNum(m.team_score) + '</td></tr>' + ours.map(prow).join('') +
-      '<tr class="team-row"><td colspan="7"><span class="team-dot" style="background:var(--them)"></span>Adversaires · ' + fmtNum(m.opp_score) + '</td></tr>' + theirs.map(prow).join('') +
+    var sb = '<table class="scoreboard"><thead><tr><th>' + tr('match.player') + '</th><th>' + tr('match.pts') + '</th><th title="' + esc(tr('perf.goals')) + '">' + tr('match.g') + '</th><th title="' + esc(tr('perf.assists')) + '">' + tr('match.a') + '</th>' +
+      '<th title="' + esc(tr('perf.saves')) + '">' + tr('match.s') + '</th><th class="hide-mobile">' + tr('perf.shots') + '</th><th class="hide-mobile">' + tr('match.demo') + '</th></tr></thead><tbody>' +
+      '<tr class="team-row"><td colspan="7"><span class="team-dot" style="background:var(--us)"></span>' + tr('match.yourTeam') + ' · ' + fmtNum(m.team_score) + '</td></tr>' + ours.map(prow).join('') +
+      '<tr class="team-row"><td colspan="7"><span class="team-dot" style="background:var(--them)"></span>' + tr('match.opponents') + ' · ' + fmtNum(m.opp_score) + '</td></tr>' + theirs.map(prow).join('') +
       '</tbody></table>';
 
     var goals = sortedGoals(m);
     var tl = goalTimeline(m, goals);
-    var us = 0, them = 0;
-    var gl = goals.length ? '<ul class="goal-list">' + goals.map(function (g) {
-      if (g.team === 'us') us++; else them++;
-      return '<li><span class="t">' + goalTime(m, g) + '</span><span class="d" style="background:' + (g.team === 'us' ? 'var(--us)' : 'var(--them)') + '"></span>' +
-        '<span class="who">' + esc(g.scorer || '?') + (g.me_scored ? ' <span class="chip">vous</span>' : '') + (g.assister ? ' <small>· passe ' + esc(g.assister) + '</small>' : '') +
-        (isNum(g.speed) && g.speed > 0 ? ' <small>· ' + fmtNum(goalKmh(g.speed)) + ' km/h</small>' : '') + '</span>' +
-        '<span class="sc">' + us + '–' + them + '</span></li>';
-    }).join('') + '</ul>' : '<p class="muted small">' + (goalsComplete(m) ? 'Aucun but dans ce match.' : 'Aucun but enregistré.') + '</p>';
-    if (!goalsComplete(m)) gl += '<p class="muted small">Suivi démarré en cours de match : chronologie incomplète (' + goals.length + ' but' + (goals.length > 1 ? 's' : '') + ' sur ' + (num(m.team_score) + num(m.opp_score)) + ').</p>';
+    var gl = goals.length ? '<ul class="goal-list">' + goalItems(m, goals) + '</ul>' : '<p class="muted small">' + tr(goalsComplete(m) ? 'match.noGoal' : 'match.noGoalRecorded') + '</p>';
+    if (!goalsComplete(m)) gl += '<p class="muted small">' + tr('match.partialTimeline', { v: plural(goals.length, 'goal'), total: num(m.team_score) + num(m.opp_score) }) + '</p>';
 
     var facts = [];
-    facts.push('<span>Durée <b>' + fmtClock(m.duration_s) + '</b></span>');
-    facts.push('<span>Arène <b>' + esc(prettyArena(m.arena)) + '</b></span>');
-    if (m.overtime) facts.push('<span>Prolongation <b>' + fmtClock(m.overtime_s) + '</b></span>');
+    var fact = function (k, v) { facts.push('<span>' + tr(k) + ' <b>' + v + '</b></span>'); };
+    fact('match.duration', fmtClock(m.duration_s));
+    fact('tbl.arena', esc(prettyArena(m.arena)));
+    if (m.overtime) fact('goals.overtime', fmtClock(m.overtime_s));
     if (m.movement) {
-      facts.push('<span>Vitesse moy. <b>' + fmtNum(kmh(m.movement.avg_speed)) + ' km/h</b></span>');
-      facts.push('<span>Supersonique <b>' + fmtPct100(m.movement.supersonic_pct, 1) + '</b></span>');
-      facts.push('<span>En l’air <b>' + fmtPct100(m.movement.air_pct, 1) + '</b></span>');
-      facts.push('<span>Boost moy. <b>' + fmtNum(m.movement.avg_boost) + '</b></span>');
+      fact('match.avgSpeed', fmtNum(kmh(m.movement.avg_speed)) + ' km/h');
+      fact('mech.supersonic_pct', fmtPct100(m.movement.supersonic_pct, 1));
+      fact('mech.air_split', fmtPct100(m.movement.air_pct, 1));
+      fact('match.avgBoost', fmtNum(m.movement.avg_boost));
     }
-    if (m.hits) facts.push('<span>Frappes <b>' + fmtNum(m.hits.count) + '</b> · moy. <b>' + fmtNum(kmh(m.hits.avg_speed)) + '</b> / max <b>' + fmtNum(kmh(m.hits.max_speed)) + ' km/h</b></span>');
+    if (m.hits) facts.push('<span>' + tr('match.hits', { n: '<b>' + fmtNum(m.hits.count) + '</b>', avg: '<b>' + fmtNum(kmh(m.hits.avg_speed)) + '</b>', max: '<b>' + fmtNum(kmh(m.hits.max_speed)) + ' km/h</b>' }) + '</span>');
     var sf = m.statfeed || {};
     var feed = Object.keys(sf).filter(function (k) { return k !== 'Win'; }).map(function (k) { return '<span class="chip">' + esc(statfeedLabel(k)) + (sf[k] > 1 ? ' ×' + sf[k] : '') + '</span>'; }).join('');
 
-    return '<div class="detail-grid"><div><h4>Tableau des scores</h4>' + sb + '</div>' +
-      '<div><h4>Chronologie des buts</h4>' + tl + gl + '</div></div>' +
+    return '<div class="detail-grid"><div><h4>' + tr('match.scoreboard') + '</h4>' + sb + '</div>' +
+      '<div><h4>' + tr('match.timeline') + '</h4>' + tl + gl + '</div></div>' +
       '<div class="detail-facts">' + facts.join('') + '</div>' +
-      (feed ? '<h4>Fil de stats</h4><div class="chips">' + feed + '</div>' : '') +
-      '<div class="detail-actions"><a class="btn btn-ghost" href="#/match/' + m.id + '">Voir le match <span aria-hidden="true">→</span></a></div>' +
-      '<div class="detail-actions only-mobile"><label class="small muted">Type&nbsp;<select class="select tag-select" data-tag-for="' + m.id + '" aria-label="Type de match">' + tagOptions(m.tag) + '</select></label></div>';
+      (feed ? '<h4>' + tr('match.feed') + '</h4><div class="chips">' + feed + '</div>' : '') +
+      '<div class="detail-actions"><a class="btn btn-ghost" href="' + href('match/' + m.id) + '">' + tr('match.open') + ' <span aria-hidden="true">→</span></a></div>' +
+      (readOnly() ? '' : '<div class="detail-actions only-mobile"><label class="small muted">' + tr('tbl.type') + '&nbsp;<select class="select tag-select" data-tag-for="' + m.id + '" aria-label="' + esc(tr('tbl.matchType')) + '">' + tagOptions(m.tag) + '</select></label></div>');
   }
 
   /* ---------- routing ---------- */
   function syncNav() {
-    var cur = state.route.view === 'dash' ? 'dash' : 'history';
+    var r = state.route;
+    var cur = r.view === 'players' || r.player ? 'players' : r.view === 'dash' ? 'dash' : 'history';
     $$('[data-nav]').forEach(function (a) {
       if (a.getAttribute('data-nav') === cur) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    if (state.route.view === 'dash') document.title = 'Rocket Tracker';
-    else if (state.route.view === 'history') document.title = 'Historique · Rocket Tracker';
+    var who = r.player ? ((viewedPlayer() || {}).name || r.player) + ' · ' : '';
+    if (r.view === 'dash') document.title = who + 'Rocket Tracker';
+    else if (r.view === 'history') document.title = who + tr('nav.history') + ' · Rocket Tracker';
+    else if (r.view === 'players') document.title = tr('nav.players') + ' · Rocket Tracker';
+    renderPlayerBanner();
+  }
+  /** Your own pages, when a route names you as "another player". */
+  function selfRoute(r) {
+    if (!r.player || !state.me || r.player !== state.me.handle) return null;
+    return routeHash(null, r.view === 'history' ? 'history' : r.view === 'match' && r.id != null ? 'match/' + r.id : '');
   }
   function onRoute() {
     var r = parseRoute(location.hash);
+    var self = selfRoute(r);
+    if (self) { location.replace(self); return; }
     var prev = state.route;
-    if (r.view === prev.view && r.id === prev.id) return;
+    if (r.view === prev.view && r.id === prev.id && r.player === prev.player) return;
     if (prev.view === 'history') state.histScroll = window.scrollY || window.pageYOffset || 0;
     state.route = r;
+    if (r.view !== 'players' && (r.player || '') !== state.dataFor) loadAll();
+    if (r.view === 'players') loadPlayers();
     renderAll();
-    window.scrollTo(0, r.view === 'history' && prev.view === 'match' ? state.histScroll : 0);
-    var h = r.view === 'history' ? $('#h-history') : r.view === 'match' ? $('#mp-title') : null;
+    window.scrollTo(0, r.view === 'history' && prev.view === 'match' && r.player === prev.player ? state.histScroll : 0);
+    var h = r.view === 'history' ? $('#h-history') : r.view === 'match' ? $('#mp-title') : r.view === 'players' ? $('#h-players') : null;
     if (h) h.focus({ preventScroll: true });
   }
 
   /* ---------- shared match bits ---------- */
-  var RES_LABEL = { win: ['V', 'Victoire'], loss: ['D', 'Défaite'], abandoned: ['Abandon', 'Abandonné'] };
-  var PARTIAL_TIP = 'Suivi démarré en cours de match : stats et chronologie des buts incomplètes';
+  function partialTip() { return tr('badge.partialTip'); }
   function resBadge(m) {
-    var r = RES_LABEL[m.result] || ['?', 'Résultat inconnu'];
+    var r = m.result === 'abandoned' ? [tr('res.abandon.badge'), tr('res.abandoned')] : resText(m.result);
+    if (!m.result) r = ['?', tr('res.unknown')];
     return '<span class="res ' + esc(m.result || '') + '" aria-hidden="true">' + r[0] + '</span><span class="sr-only">' + r[1] + '</span>';
   }
   function longDay(t) {
-    var s = new Date(t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    var s = fmtDay(t, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
-  function fmtTime(t) { return new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
+  function fmtTime(t) { return new Date(t).toLocaleTimeString(L(), { hour: '2-digit', minute: '2-digit' }); }
   function modeLabel(m) { return (m.mode || '—') + (m.variant && m.variant !== 'Soccar' ? ' ' + m.variant : ''); }
   function signCls(x) { return isNum(x) && x > 0 ? 'pos' : isNum(x) && x < 0 ? 'neg' : ''; }
   function matchBadges(m, long) {
     var b = [];
-    if (m.mvp) b.push('<span class="chip mvp" title="Meilleur joueur du match">MVP</span>');
-    if (m.overtime) b.push('<span class="chip" title="Prolongation' + (isNum(m.overtime_s) && m.overtime_s > 0 ? ' : ' + fmtClock(m.overtime_s) : '') + '">' + (long ? 'Prolongation' : 'Prol.') + '</span>');
+    if (m.mvp) b.push('<span class="chip mvp" title="' + esc(tr('badge.mvpTip')) + '">MVP</span>');
+    if (m.overtime) b.push('<span class="chip" title="' + esc(tr('goals.overtime') + (isNum(m.overtime_s) && m.overtime_s > 0 ? ' : ' + fmtClock(m.overtime_s) : '')) + '">' + (long ? tr('goals.overtime') : tr('goals.ot')) + '</span>');
     if (m.forfeit) {
-      b.push(m.result === 'win' ? '<span class="chip" title="Victoire par forfait de l’équipe adverse">Forfait adv.</span>'
-        : '<span class="chip" title="Défaite par forfait de votre équipe">Forfait</span>');
+      b.push(m.result === 'win' ? '<span class="chip" title="' + esc(tr('badge.oppForfeitTip')) + '">' + tr('badge.oppForfeit') + '</span>'
+        : '<span class="chip" title="' + esc(tr('badge.ownForfeitTip')) + '">' + tr('badge.forfeit') + '</span>');
     }
-    if (m.partial) b.push('<span class="chip warn" title="' + esc(PARTIAL_TIP) + '">Partiel</span>');
-    if (m.online === false) b.push('<span class="chip" title="Match hors ligne (bots, local)">Hors ligne</span>');
+    if (m.partial) b.push('<span class="chip warn" title="' + esc(partialTip()) + '">' + tr('badge.partial') + '</span>');
+    if (m.online === false) b.push('<span class="chip" title="' + esc(tr('badge.offlineTip')) + '">' + tr('badge.offline') + '</span>');
     return b.join('');
   }
   function tagFilterOptions() {
     var tags = TAGS.slice();
     state.all.forEach(function (m) { if (m.tag && tags.indexOf(m.tag) < 0) tags.push(m.tag); });
-    return '<option value="all">Tous</option>' + tags.map(function (t) { return '<option value="' + esc(t) + '">' + esc(TAG_LABELS[t] || t) + '</option>'; }).join('');
+    return '<option value="all">' + tr('common.all') + '</option>' + tags.map(function (t) { return '<option value="' + esc(t) + '">' + esc(tagLabel(t)) + '</option>'; }).join('');
   }
   var DOT_SEP = '<span class="dot-sep" aria-hidden="true">·</span>';
 
@@ -1894,36 +2027,36 @@
     var mm = m.me || {};
     var diff = isNum(m.goal_diff) ? m.goal_diff : (isNum(m.team_score) && isNum(m.opp_score) ? m.team_score - m.opp_score : null);
     var badges = matchBadges(m, false);
-    return '<li><a class="hrow" href="#/match/' + m.id + '">' +
+    return '<li><a class="hrow" href="' + href('match/' + m.id) + '">' +
       '<span class="h-time num">' + esc(fmtTime(m._t)) + '</span>' +
       '<span class="h-mode">' + esc(modeLabel(m)) + '</span>' +
       '<span class="h-res">' + resBadge(m) + '</span>' +
       '<span class="h-score"><span class="score">' + fmtNum(m.team_score) + '<span class="sep">–</span>' + fmtNum(m.opp_score) + '</span>' +
         (diff != null ? ' <span class="h-diff ' + signCls(diff) + '">' + fmtSigned(diff) + '</span>' : '') + '</span>' +
       '<span class="h-arena"><span class="h-arena-name">' + esc(prettyArena(m.arena)) + '</span>' + (badges ? '<span class="chips">' + badges + '</span>' : '') + '</span>' +
-      '<span class="h-stats num" title="Buts / Passes / Arrêts / Tirs">' + fmtNum(mm.goals) + ' / ' + fmtNum(mm.assists) + ' / ' + fmtNum(mm.saves) + ' / ' + fmtNum(mm.shots) + '</span>' +
+      '<span class="h-stats num" title="' + esc(tr('hist.statsTip')) + '">' + fmtNum(mm.goals) + ' / ' + fmtNum(mm.assists) + ' / ' + fmtNum(mm.saves) + ' / ' + fmtNum(mm.shots) + '</span>' +
       '<span class="h-pts num">' + fmtNum(mm.score) + '<small> pts</small></span>' +
-      '<span class="h-dur num" title="Durée">' + fmtClock(m.duration_s) + '</span>' +
+      '<span class="h-dur num" title="' + esc(tr('match.duration')) + '">' + fmtClock(m.duration_s) + '</span>' +
       '<span class="h-go" aria-hidden="true">›</span></a></li>';
   }
   function manualRow(e) {
-    return '<li class="hist-manual"><span class="hm-icon" aria-hidden="true">✎</span><span>Saisie manuelle' + DOT_SEP + plural(e.games, 'game') + ' ' + esc(e.mode) + DOT_SEP +
-      e.wins + ' V – ' + e.losses + ' D</span></li>';
+    return '<li class="hist-manual"><span class="hm-icon" aria-hidden="true">✎</span><span>' + tr('hist.manual') + DOT_SEP + plural(e.games, 'game') + ' ' + esc(e.mode) + DOT_SEP +
+      wlShort(e.wins, e.losses) + '</span></li>';
   }
   function histDay(g) {
     var head = longDay(g.t);
-    var tot = [plural(g.games, 'match'), g.wins + ' V – ' + g.losses + ' D'];
+    var tot = [plural(g.games, 'match'), wlShort(g.wins, g.losses)];
     if (g.abandoned) tot.push(plural(g.abandoned, 'abandon'));
-    if (g.decided) tot.push('diff. <b class="' + signCls(g.diff) + '">' + fmtSigned(g.diff) + '</b>');
-    var note = g.manualGames ? ' <span class="chip manual" title="Les totaux du jour incluent ' + plural(g.manualGames, 'game') + ' saisie' + (g.manualGames > 1 ? 's' : '') + ' à la main">✎ dont ' + g.manualGames + ' saisie' + (g.manualGames > 1 ? 's' : '') + '</span>' : '';
-    var rows = g.shownMatches.map(histRow).join('') + (g.truncated ? '<li class="hist-trunc">Suite de la journée avec « Afficher plus »</li>' : g.manual.map(manualRow).join(''));
+    if (g.decided) tot.push(tr('hist.diff', { v: '<b class="' + signCls(g.diff) + '">' + fmtSigned(g.diff) + '</b>' }));
+    var note = g.manualGames ? ' <span class="chip manual" title="' + esc(tr('hist.manualTip', { v: plural(g.manualGames, 'game'), n: g.manualGames })) + '">✎ ' + tr('hist.manualChip', { n: g.manualGames }) + '</span>' : '';
+    var rows = g.shownMatches.map(histRow).join('') + (g.truncated ? '<li class="hist-trunc">' + tr('hist.trunc') + '</li>' : g.manual.map(manualRow).join(''));
     return '<section class="card hist-day" aria-label="' + esc(head) + '"><header class="hist-day-head"><h2>' + esc(head) + '</h2>' +
       '<p class="hist-day-tot">' + tot.join(DOT_SEP) + note + '</p></header><ul class="hist-rows">' + rows + '</ul></section>';
   }
   function renderHistory() {
     syncHistUi();
     var f = state.hist, box = $('#hist-list'), more = $('#hist-more'), sum = $('#hist-summary');
-    if (!state.loaded) { sum.textContent = ''; more.hidden = true; box.innerHTML = '<div class="hist-empty muted">Chargement…</div>'; return; }
+    if (!state.loaded) { sum.textContent = ''; more.hidden = true; box.innerHTML = '<div class="hist-empty muted">' + tr('common.loading') + '</div>'; return; }
     var ms = filterHistory(state.all, f);
     var man = filterManualHistory(state.manual, f);
     var groups = groupHistory(ms, man);
@@ -1931,25 +2064,25 @@
     var s = summarizeHistory(ms, man);
     var parts = [];
     if (s.n) {
-      parts.push('<b>' + fmtNum(s.n) + '</b> match' + (s.n > 1 ? 's' : ''));
-      parts.push('<b>' + s.wins + '</b> V – <b>' + s.losses + '</b> D' + (s.abandoned ? ' <span class="muted">(+ ' + plural(s.abandoned, 'abandon') + ')</span>' : ''));
-      parts.push('<b>' + fmtPct(s.wr) + '</b> de victoire');
-      parts.push('diff. moyenne <b class="' + signCls(s.diffAvg) + '">' + fmtSigned(s.diffAvg, 2) + '</b>');
-    } else parts.push('Aucun match suivi');
-    if (s.manualGames) parts.push('<span class="muted">+ ' + plural(s.manualGames, 'game') + ' saisie' + (s.manualGames > 1 ? 's' : '') + ' à la main</span>');
+      parts.push('<b>' + fmtNum(s.n) + '</b> ' + tr('unit.match', { n: s.n }));
+      parts.push(tr('wl.short', { w: '<b>' + s.wins + '</b>', l: '<b>' + s.losses + '</b>' }) + (s.abandoned ? ' <span class="muted">(+ ' + plural(s.abandoned, 'abandon') + ')</span>' : ''));
+      parts.push(tr('hist.wr', { v: '<b>' + fmtPct(s.wr) + '</b>' }));
+      parts.push(tr('hist.diffAvg', { v: '<b class="' + signCls(s.diffAvg) + '">' + fmtSigned(s.diffAvg, 2) + '</b>' }));
+    } else parts.push(tr('hist.none'));
+    if (s.manualGames) parts.push('<span class="muted">' + tr('hist.plusManual', { v: plural(s.manualGames, 'game'), n: s.manualGames }) + '</span>');
     sum.innerHTML = parts.join(DOT_SEP);
     if (!groups.length) {
       more.hidden = true;
       box.innerHTML = !state.all.length && !state.manual.length
-        ? '<div class="no-results"><p><strong>Aucun match enregistré pour l’instant.</strong></p><p class="muted">Jouez une partie : elle apparaîtra ici automatiquement.</p></div>'
-        : '<div class="no-results"><p><strong>Aucun match ne correspond à ces filtres.</strong></p><p class="muted">Élargissez la période ou modifiez la recherche.</p>' +
-          '<p><button type="button" class="btn" data-hist-reset>Réinitialiser les filtres</button></p></div>';
+        ? '<div class="no-results"><p><strong>' + tr('hist.emptyTitle') + '</strong></p><p class="muted">' + tr('hist.emptyText') + '</p></div>'
+        : '<div class="no-results"><p><strong>' + tr('hist.noMatchTitle') + '</strong></p><p class="muted">' + tr('hist.noMatchText') + '</p>' +
+          '<p><button type="button" class="btn" data-hist-reset>' + tr('hist.reset') + '</button></p></div>';
       return;
     }
-    box.innerHTML = '<div class="hist-cols" aria-hidden="true"><span>Heure</span><span>Mode</span><span>Rés.</span><span>Score</span><span>Arène</span>' +
-      '<span class="r">B / P / A / Tirs</span><span class="r">Points</span><span class="r">Durée</span><span></span></div>' + page.groups.map(histDay).join('');
+    box.innerHTML = '<div class="hist-cols" aria-hidden="true"><span>' + tr('hist.time') + '</span><span>' + tr('tbl.mode') + '</span><span>' + tr('tbl.res') + '</span><span>' + tr('perf.score') + '</span><span>' + tr('tbl.arena') + '</span>' +
+      '<span class="r">' + tr('hist.statsCol') + '</span><span class="r">' + tr('tbl.points') + '</span><span class="r">' + tr('match.duration') + '</span><span></span></div>' + page.groups.map(histDay).join('');
     more.hidden = page.remaining <= 0;
-    more.textContent = 'Afficher plus (' + plural(page.remaining, 'match') + ' restant' + (page.remaining > 1 ? 's' : '') + ')';
+    more.textContent = tr('hist.more', { v: plural(page.remaining, 'match'), n: page.remaining });
   }
   function onHistChanged() { saveHistFilters(); state.histShown = HIST_PAGE; renderHistory(); }
   function bindHistory() {
@@ -1984,56 +2117,58 @@
   /* ---------- match page ---------- */
   function navLink(t, label, rel, key) {
     if (!t) return '<span class="btn btn-ghost" aria-disabled="true">' + label + '</span>';
-    var tip = fmtDate(t._t, true) + ' · ' + modeLabel(t) + ' · ' + num(t.team_score) + '–' + num(t.opp_score) + ' (touche ' + key + ')';
-    return '<a class="btn btn-ghost" href="#/match/' + t.id + '" rel="' + rel + '" title="' + esc(tip) + '">' + label + '</a>';
+    var tip = fmtDate(t._t, true) + ' · ' + modeLabel(t) + ' · ' + num(t.team_score) + '–' + num(t.opp_score) + ' (' + tr('mp.key', { v: key }) + ')';
+    return '<a class="btn btn-ghost" href="' + href('match/' + t.id) + '" rel="' + rel + '" title="' + esc(tip) + '">' + label + '</a>';
   }
   function mpNav(nb) {
-    return '<nav class="mp-nav" aria-label="Navigation entre les matchs">' +
-      '<a class="btn btn-ghost" href="#/historique"><span aria-hidden="true">←</span> Historique</a>' +
-      '<div class="mp-pn">' + navLink(nb.prev, '<span aria-hidden="true">‹</span> Précédent', 'prev', '←') +
-      '<span class="mp-pos num" title="Position chronologique parmi tous vos matchs">' + fmtNum(nb.index + 1) + ' / ' + fmtNum(nb.total) + '</span>' +
-      navLink(nb.next, 'Suivant <span aria-hidden="true">›</span>', 'next', '→') + '</div></nav>';
+    return '<nav class="mp-nav" aria-label="' + esc(tr('mp.navAria')) + '">' +
+      '<a class="btn btn-ghost" href="' + href('history') + '"><span aria-hidden="true">←</span> ' + tr('nav.history') + '</a>' +
+      '<div class="mp-pn">' + navLink(nb.prev, '<span aria-hidden="true">‹</span> ' + tr('mp.prev'), 'prev', '←') +
+      '<span class="mp-pos num" title="' + esc(tr('mp.posTip')) + '">' + fmtNum(nb.index + 1) + ' / ' + fmtNum(nb.total) + '</span>' +
+      navLink(nb.next, tr('mp.next') + ' <span aria-hidden="true">›</span>', 'next', '→') + '</div></nav>';
   }
   function mpHero(m, ctx) {
     var cls = m.result === 'win' || m.result === 'loss' || m.result === 'abandoned' ? m.result : '';
-    var resTxt = m.result === 'win' ? (m.forfeit ? 'Victoire par forfait' : 'Victoire') : m.result === 'loss' ? (m.forfeit ? 'Défaite par forfait' : 'Défaite')
-      : m.result === 'abandoned' ? 'Match abandonné' : 'Résultat inconnu';
-    var dur = 'Durée <b>' + fmtClock(m.duration_s) + '</b>' + (m.overtime ? ' dont <b>' + fmtClock(m.overtime_s) + '</b> de prolongation' : '');
-    var facts = [esc(m.mode || '—'), esc(m.variant || 'Soccar'), esc(prettyArena(m.arena)), m.online === false ? 'Hors ligne' : 'En ligne', dur];
+    var resTxt = m.result === 'win' ? tr(m.forfeit ? 'mp.winForfeit' : 'res.win') : m.result === 'loss' ? tr(m.forfeit ? 'mp.lossForfeit' : 'res.loss')
+      : m.result === 'abandoned' ? tr('mp.abandoned') : tr('res.unknown');
+    var dur = tr('match.duration') + ' <b>' + fmtClock(m.duration_s) + '</b>' + (m.overtime ? ' ' + tr('mp.otPart', { v: '<b>' + fmtClock(m.overtime_s) + '</b>' }) : '');
+    var facts = [esc(m.mode || '—'), esc(m.variant || 'Soccar'), esc(prettyArena(m.arena)), m.online === false ? tr('badge.offline') : tr('mp.online'), dur];
     var ts = fmtNum(m.team_score), os = fmtNum(m.opp_score);
     var badges = matchBadges(m, true);
     var ctxParts = [];
     if (ctx) {
-      ctxParts.push('Match <b>n°' + ctx.sessIdx + '</b> de la session (' + plural(ctx.sessN, 'match') + ')');
+      ctxParts.push(tr('mp.sessIdx', { i: '<b>' + tr('mental.bestNo', { v: ctx.sessIdx }) + '</b>', v: plural(ctx.sessN, 'match') }));
       var p = ctx.prevInSession;
       if (p) {
-        var pr = RES_LABEL[p.result] ? RES_LABEL[p.result][1] : 'Résultat inconnu';
-        ctxParts.push('Match précédent : <a href="#/match/' + p.id + '">' + esc(pr) + ' ' + fmtNum(p.team_score) + '–' + fmtNum(p.opp_score) + '</a> <span class="muted">(' + esc(modeLabel(p)) + ')</span>');
-      } else ctxParts.push('Premier match de la session');
+        var pr = resText(p.result)[1];
+        ctxParts.push(tr('mp.prevMatch', { v: '<a href="' + href('match/' + p.id) + '">' + esc(pr) + ' ' + fmtNum(p.team_score) + '–' + fmtNum(p.opp_score) + '</a> <span class="muted">(' + esc(modeLabel(p)) + ')</span>' }));
+      } else ctxParts.push(tr('mp.firstOfSession'));
       if (ctx.streak) {
         var w = ctx.streak.type === 'win', n = ctx.streak.len;
-        ctxParts.push((m.result === 'win' || m.result === 'loss' ? 'Série après ce match' : 'Série en cours à ce moment') + ' : <b class="' + (w ? 'pos' : 'neg') + '">' + n + ' ' + (w ? 'victoire' : 'défaite') + (n > 1 ? 's' : '') + '</b>' + (n > 1 ? ' d’affilée' : ''));
+        ctxParts.push(tr(m.result === 'win' || m.result === 'loss' ? 'mp.streakAfter' : 'mp.streakAt', {
+          v: '<b class="' + (w ? 'pos' : 'neg') + '">' + n + ' ' + tr(w ? 'kpi.streakWins' : 'kpi.streakLosses', { n: n }) + '</b>' }));
       }
     }
     return '<section class="card mp-hero" aria-labelledby="mp-title">' +
       '<div class="mp-meta"><h1 id="mp-title" tabindex="-1">' + esc(longDay(m._t)) + ' · ' + esc(fmtTime(m._t)) + '</h1>' +
         '<p class="mp-facts">' + facts.join(DOT_SEP) + '</p></div>' +
       '<div class="mp-center">' +
-        '<div class="mp-score" role="img" aria-label="' + esc('Score : votre équipe ' + ts + ', adversaires ' + os) + '">' +
-          '<div class="mp-team us"><span class="mp-n">' + ts + '</span><span class="mp-tl">Votre équipe</span></div>' +
+        '<div class="mp-score" role="img" aria-label="' + esc(tr('mp.scoreAria', { us: ts, them: os })) + '">' +
+          '<div class="mp-team us"><span class="mp-n">' + ts + '</span><span class="mp-tl">' + tr('match.yourTeam') + '</span></div>' +
           '<span class="mp-sep" aria-hidden="true">–</span>' +
-          '<div class="mp-team them"><span class="mp-n">' + os + '</span><span class="mp-tl">Adversaires</span></div></div>' +
+          '<div class="mp-team them"><span class="mp-n">' + os + '</span><span class="mp-tl">' + tr('match.opponents') + '</span></div></div>' +
         '<div class="mp-res ' + cls + '">' + resTxt + '</div>' +
         (badges ? '<div class="chips">' + badges + '</div>' : '') +
       '</div>' +
-      '<div class="mp-side"><label class="mp-tag"><span>Type</span><select class="select tag-select" data-tag-for="' + m.id + '" aria-label="Type de match">' + tagOptions(m.tag) + '</select></label>' +
-        '<button type="button" class="btn btn-ghost btn-danger" data-mp-del="' + m.id + '">' + TRASH + 'Supprimer</button></div>' +
-      (m.partial ? '<p class="mp-note">' + esc(PARTIAL_TIP) + '.</p>' : '') +
+      (readOnly() ? '<div class="mp-side"><span class="mp-tag"><span>' + tr('tbl.type') + '</span><b>' + esc(tagLabel(m.tag)) + '</b></span></div>'
+        : '<div class="mp-side"><label class="mp-tag"><span>' + tr('tbl.type') + '</span><select class="select tag-select" data-tag-for="' + m.id + '" aria-label="' + esc(tr('tbl.matchType')) + '">' + tagOptions(m.tag) + '</select></label>' +
+          '<button type="button" class="btn btn-ghost btn-danger" data-mp-del="' + m.id + '">' + TRASH + tr('mp.delete') + '</button></div>') +
+      (m.partial ? '<p class="mp-note">' + esc(partialTip()) + '.</p>' : '') +
       (ctxParts.length ? '<div class="mp-context">' + ctxParts.map(function (x) { return '<span>' + x + '</span>'; }).join('') + '</div>' : '') +
       '</section>';
   }
 
-  var SB_COLS = [['score', 'Score'], ['goals', 'Buts'], ['assists', 'Passes'], ['saves', 'Arrêts'], ['shots', 'Tirs'], ['touches', 'Touches'], ['demos', 'Démos']];
+  var SB_COLS = ['score', 'goals', 'assists', 'saves', 'shots', 'touches', 'demos'];
   function mpScoreboard(m) {
     var players = (m.players || []).filter(function (p) { return p && typeof p === 'object'; });
     if (!players.length && m.me && m.me.name) players = [Object.assign({ team: m.my_team, is_me: true }, m.me)];
@@ -2041,21 +2176,21 @@
       var list = players.filter(function (p) { return us ? p.team === m.my_team : p.team !== m.my_team; })
         .sort(function (a, b) { return num(b.score) - num(a.score); });
       var html = '<tbody><tr class="team-row"><th colspan="' + (SB_COLS.length + 1) + '" scope="colgroup"><span class="team-dot" style="background:var(--' + (us ? 'us' : 'them') + ')"></span>' +
-        (us ? 'Votre équipe' : 'Adversaires') + ' · ' + fmtNum(us ? m.team_score : m.opp_score) + '</th></tr>';
-      if (!list.length) return html + '<tr><td class="muted" colspan="' + (SB_COLS.length + 1) + '">Joueurs inconnus</td></tr></tbody>';
+        tr(us ? 'match.yourTeam' : 'match.opponents') + ' · ' + fmtNum(us ? m.team_score : m.opp_score) + '</th></tr>';
+      if (!list.length) return html + '<tr><td class="muted" colspan="' + (SB_COLS.length + 1) + '">' + tr('mp.unknownPlayers') + '</td></tr></tbody>';
       html += list.map(function (p) {
-        return '<tr' + (p.is_me ? ' class="me"' : '') + '><th scope="row">' + playerName(p.name, p.primary_id) + (p.is_me ? ' <span class="chip you">vous</span>' : '') + '</th>' +
-          SB_COLS.map(function (c) { return '<td>' + fmtNum(p[c[0]]) + '</td>'; }).join('') + '</tr>';
+        return '<tr' + (p.is_me ? ' class="me"' : '') + '><th scope="row">' + playerName(p.name, p.primary_id) + (p.is_me ? ' <span class="chip you">' + tr('common.you') + '</span>' : '') + '</th>' +
+          SB_COLS.map(function (c) { return '<td>' + fmtNum(p[c]) + '</td>'; }).join('') + '</tr>';
       }).join('');
-      html += '<tr class="tot"><th scope="row">Total</th>' + SB_COLS.map(function (c) {
-        var vals = list.map(function (p) { return p[c[0]]; }).filter(isNum);
+      html += '<tr class="tot"><th scope="row">' + tr('mp.total') + '</th>' + SB_COLS.map(function (c) {
+        var vals = list.map(function (p) { return p[c]; }).filter(isNum);
         return '<td>' + (vals.length ? fmtNum(vals.reduce(function (a, b) { return a + b; }, 0)) : '—') + '</td>';
       }).join('') + '</tr></tbody>';
       return html;
     }
-    return '<section class="card mp-card mp-span" aria-labelledby="mp-h-sb"><div class="mp-head"><h2 id="mp-h-sb">Tableau des scores</h2>' +
-      '<span class="card-meta">Cliquez sur un pseudo pour son profil tracker.gg</span></div>' +
-      '<div class="table-scroll"><table class="mp-sb"><thead><tr><th scope="col">Joueur</th>' + SB_COLS.map(function (c) { return '<th scope="col">' + c[1] + '</th>'; }).join('') + '</tr></thead>' +
+    return '<section class="card mp-card mp-span" aria-labelledby="mp-h-sb"><div class="mp-head"><h2 id="mp-h-sb">' + tr('match.scoreboard') + '</h2>' +
+      '<span class="card-meta">' + tr('mp.sbHint') + '</span></div>' +
+      '<div class="table-scroll"><table class="mp-sb"><thead><tr><th scope="col">' + tr('match.player') + '</th>' + SB_COLS.map(function (c) { return '<th scope="col">' + tr('perf.' + c) + '</th>'; }).join('') + '</tr></thead>' +
       team(true) + team(false) + '</table></div></section>';
   }
 
@@ -2064,25 +2199,25 @@
     var complete = goalsComplete(m);
     var expected = num(m.team_score) + num(m.opp_score);
     var us = 0, them = 0;
+    var you = ' <span class="chip you">' + tr('common.you') + '</span>';
     var list = goals.length ? '<ol class="goal-list mp-goal-list">' + goals.map(function (g) {
       var ours = g.team === 'us';
       if (ours) us++; else them++;
       var spd = isNum(g.speed) && g.speed > 0 ? fmtNum(goalKmh(g.speed)) + ' km/h' : '';
       return '<li><span class="t num">' + goalTime(m, g) + '</span><span class="d" style="background:var(--' + (ours ? 'us' : 'them') + ')"></span>' +
-        '<span class="sr-only">' + (ours ? 'Votre équipe' : 'Adversaires') + '</span>' +
-        '<span class="who"><b>' + esc(g.scorer || '?') + '</b>' + (g.me_scored ? ' <span class="chip you">vous</span>' : '') +
-        (g.assister ? ' <small>· passe ' + esc(g.assister) + (g.me_assist ? ' <span class="chip you">vous</span>' : '') + '</small>' : '') + '</span>' +
+        '<span class="sr-only">' + tr(ours ? 'match.yourTeam' : 'match.opponents') + '</span>' +
+        '<span class="who"><b>' + esc(g.scorer || '?') + '</b>' + (g.me_scored ? you : '') +
+        (g.assister ? ' <small>· ' + tr('match.assist', { v: esc(g.assister) }) + (g.me_assist ? you : '') + '</small>' : '') + '</span>' +
         '<span class="spd num">' + spd + '</span>' +
-        (complete ? '<span class="sc num" title="Score après ce but">' + us + '–' + them + '</span>' : '') + '</li>';
-    }).join('') + '</ol>' : '<p class="muted small">' + (complete ? 'Aucun but dans ce match.' : 'Aucun but enregistré.') + '</p>';
-    var note = complete ? '' : '<p class="mp-note">Liste incomplète : ' + plural(goals.length, 'but') + ' enregistré' + (goals.length > 1 ? 's' : '') + ' sur ' + expected +
-      ' (suivi démarré en cours de match). Le score cumulé n’est pas affiché.</p>';
-    return '<section class="card mp-card" aria-labelledby="mp-h-goals"><div class="mp-head"><h2 id="mp-h-goals">Buts</h2>' +
-      '<span class="legend"><span><i style="background:var(--us)"></i>Votre équipe</span><span><i style="background:var(--them)"></i>Adversaires</span><span><i class="ring"></i>vous</span></span></div>' +
+        (complete ? '<span class="sc num" title="' + esc(tr('mp.scoreAfter')) + '">' + us + '–' + them + '</span>' : '') + '</li>';
+    }).join('') + '</ol>' : '<p class="muted small">' + tr(complete ? 'match.noGoal' : 'match.noGoalRecorded') + '</p>';
+    var note = complete ? '' : '<p class="mp-note">' + tr('mp.partialGoals', { v: plural(goals.length, 'goal'), n: goals.length, total: expected }) + '</p>';
+    return '<section class="card mp-card" aria-labelledby="mp-h-goals"><div class="mp-head"><h2 id="mp-h-goals">' + tr('perf.goals') + '</h2>' +
+      '<span class="legend"><span><i style="background:var(--us)"></i>' + tr('match.yourTeam') + '</span><span><i style="background:var(--them)"></i>' + tr('match.opponents') + '</span><span><i class="ring"></i>' + tr('common.you') + '</span></span></div>' +
       goalTimeline(m, goals) + list + note + '</section>';
   }
 
-  function cmpUnit(s) { return s.unit === '%' ? ' %' : s.unit ? ' ' + s.unit : ''; }
+  function cmpUnit(s) { return s.unit === '%' ? (I18N.getLang() === 'fr' ? ' %' : '%') : s.unit ? ' ' + s.unit : ''; }
   /** One "this match vs average" row: value, average, signed delta (arrow + sign, colored when good/bad), bar + average tick. */
   function cmpRow(s, v, a) {
     var ad = s.avgDigits != null ? s.avgDigits : s.digits;
@@ -2091,41 +2226,42 @@
     var flat = d != null && Math.abs(d) < 0.5 * Math.pow(10, -ad);
     var good = d == null || flat || s.higherBetter == null ? null : (d > 0) === s.higherBetter;
     var cls = d == null ? '' : flat ? 'flat' : good == null ? 'neutral' : good ? 'up' : 'down';
-    var txt = d == null ? '—' : flat ? '= moy.' : (d > 0 ? '↑ ' : '↓ ') + fmtSigned(d, ad) + (s.unit === '%' ? ' pt' : cmpUnit(s));
+    var txt = d == null ? '—' : flat ? tr('mp.eqAvg') : (d > 0 ? '↑ ' : '↓ ') + fmtSigned(d, ad) + (s.unit === '%' ? ' pt' : cmpUnit(s));
     var max = Math.max(isNum(v) ? v : 0, isNum(a) ? a : 0) * 1.15;
     var bar = '';
     if (max > 0) {
-      bar = '<span class="cmp" aria-hidden="true" title="' + esc('Ce match : ' + fv(v, s.digits) + ' · moyenne : ' + fv(a, ad)) + '">' +
+      bar = '<span class="cmp" aria-hidden="true" title="' + esc(tr('mp.cmpTip', { v: fv(v, s.digits), a: fv(a, ad) })) + '">' +
         (isNum(v) ? '<span class="cmp-fill" style="width:' + (v / max * 100).toFixed(1) + '%"></span>' : '') +
         (isNum(a) ? '<span class="cmp-avg" style="left:' + (a / max * 100).toFixed(1) + '%"></span>' : '') + '</span>';
     }
-    return '<tr><th scope="row">' + esc(s.label) + '</th><td class="v">' + fv(v, s.digits) + '</td><td class="a">' + fv(a, ad) + '</td>' +
+    return '<tr><th scope="row">' + esc(statLabel(s)) + '</th><td class="v">' + fv(v, s.digits) + '</td><td class="a">' + fv(a, ad) + '</td>' +
       '<td class="dl ' + cls + '">' + txt + '</td><td class="b">' + bar + '</td></tr>';
   }
   function cmpTable(rows) {
-    return '<div class="table-scroll"><table class="cmp-table"><thead><tr><th scope="col"><span class="sr-only">Statistique</span></th><th scope="col">Ce match</th><th scope="col">Moyenne</th>' +
-      '<th scope="col">Écart</th><th scope="col" class="b"><span class="legend"><span><i style="background:var(--us)"></i>ce match</span><span><i class="tick"></i>moyenne</span></span></th></tr></thead><tbody>' +
+    return '<div class="table-scroll"><table class="cmp-table"><thead><tr><th scope="col"><span class="sr-only">' + tr('mp.stat') + '</span></th><th scope="col">' + tr('mp.thisMatch') + '</th><th scope="col">' + tr('mp.average') + '</th>' +
+      '<th scope="col">' + tr('mp.gap') + '</th><th scope="col" class="b"><span class="legend"><span><i style="background:var(--us)"></i>' + tr('mp.thisMatchLc') + '</span><span><i class="tick"></i>' + tr('mp.averageLc') + '</span></span></th></tr></thead><tbody>' +
       rows.join('') + '</tbody></table></div>';
   }
   function mpPerf(m, base) {
-    var head = '<div class="mp-head"><h2 id="mp-h-perf">Votre performance vs votre moyenne</h2>';
+    var head = '<div class="mp-head"><h2 id="mp-h-perf">' + tr('mp.perfTitle') + '</h2>';
     var open = '<section class="card mp-card" aria-labelledby="mp-h-perf">';
     if (!base || base.n < 3) {
-      return open + head + '</div><p class="muted small">Pas assez de matchs ' + esc(modeLabel(m)) + ' terminés avant celui-ci pour comparer (' + (base ? base.n : 0) + ' sur 3 minimum).</p></section>';
+      return open + head + '</div><p class="muted small">' + tr('mp.perfNotEnough', { mode: esc(modeLabel(m)), v: base ? base.n : 0 }) + '</p></section>';
     }
     var perf = PERF_STATS.map(function (s) {
       return cmpRow(Object.assign({ avgDigits: s.key === 'score' ? 0 : 1 }, s), statValue(m, 'me', s), base.me[s.key].avg);
     });
-    return open + head + '<span class="card-meta">Moyenne de vos ' + base.n + ' derniers matchs ' + esc(modeLabel(m)) + ' terminés avant celui-ci</span></div>' +
+    return open + head + '<span class="card-meta">' + tr('mp.perfSub', { v: base.n, mode: esc(modeLabel(m)) }) + '</span></div>' +
       cmpTable(perf) + '</section>';
   }
+  function splitNames() { return [tr('mech.ground_pct'), tr('mech.wall_pct'), tr('mech.air_split')]; }
   function splitRow(label, g, w, a) {
     var vals = [g, w, a], tot = vals.reduce(function (s, x) { return s + (isNum(x) ? x : 0); }, 0);
     if (!(tot > 0)) return '';
-    var names = ['Au sol', 'Sur les murs', 'En l’air'];
+    var names = splitNames();
     return '<div class="mp-split-row"><span class="lbl">' + label + '</span><div class="split-bar">' + vals.map(function (v, i) {
-      return '<span style="width:' + ((isNum(v) ? v : 0) / tot * 100).toFixed(2) + '%;background:' + T.series[i] + '" title="' + esc(names[i] + ' : ' + fmtPct100(v, 1)) + '"></span>';
-    }).join('') + '</div><span class="vals num">' + vals.map(function (v) { return fmtNum(v, 0); }).join(' / ') + ' %</span></div>';
+      return '<span style="width:' + ((isNum(v) ? v : 0) / tot * 100).toFixed(2) + '%;background:' + T.series[i] + '" title="' + esc(tr('fmt.labelValue', { label: names[i], v: fmtPct100(v, 1) })) + '"></span>';
+    }).join('') + '</div><span class="vals num">' + pct(vals.map(function (v) { return fmtNum(v, 0); }).join(' / ')) + '</span></div>';
   }
   function mpMovement(m, base) {
     var mv = m.movement, h = m.hits;
@@ -2134,21 +2270,21 @@
     function avgOf(o, k) { return o && o[k] && o[k].n >= 3 ? o[k].avg : null; }
     var nMv = bm && bm.avg_speed ? bm.avg_speed.n : 0, nH = bh && bh.avg_speed ? bh.avg_speed.n : 0;
     var nRef = Math.max(nMv, nH);
-    var sub = nRef >= 3 ? 'Comparé à vos ' + nRef + ' derniers matchs ' + esc(modeLabel(m)) + ' avec données' : 'Pas assez de matchs précédents avec données pour comparer';
-    var html = '<section class="card mp-card" aria-labelledby="mp-h-mv"><div class="mp-head"><h2 id="mp-h-mv">Mouvement &amp; frappes</h2><span class="card-meta">' + sub + '</span></div>';
+    var sub = nRef >= 3 ? tr('mp.mvSub', { v: nRef, mode: esc(modeLabel(m)) }) : tr('mp.mvNotEnough');
+    var html = '<section class="card mp-card" aria-labelledby="mp-h-mv"><div class="mp-head"><h2 id="mp-h-mv">' + tr('mp.mvTitle') + '</h2><span class="card-meta">' + sub + '</span></div>';
     if (mv) {
-      var rowThis = splitRow('Ce match', mv.ground_pct, mv.wall_pct, mv.air_pct);
-      var rowAvg = avgOf(bm, 'ground_pct') != null ? splitRow('Moyenne', bm.ground_pct.avg, bm.wall_pct.avg, bm.air_pct.avg) : '';
+      var rowThis = splitRow(tr('mp.thisMatch'), mv.ground_pct, mv.wall_pct, mv.air_pct);
+      var rowAvg = avgOf(bm, 'ground_pct') != null ? splitRow(tr('mp.average'), bm.ground_pct.avg, bm.wall_pct.avg, bm.air_pct.avg) : '';
       if (rowThis) {
-        html += '<div class="mp-split"><div class="mp-split-head"><span class="card-title">Répartition du temps</span><span class="legend">' +
-          ['Au sol', 'Sur les murs', 'En l’air'].map(function (l, i) { return '<span><i style="background:' + T.series[i] + '"></i>' + l + '</span>'; }).join('') + '</span></div>' +
+        html += '<div class="mp-split"><div class="mp-split-head"><span class="card-title">' + tr('mech.split') + '</span><span class="legend">' +
+          splitNames().map(function (l, i) { return '<span><i style="background:' + T.series[i] + '"></i>' + l + '</span>'; }).join('') + '</span></div>' +
           rowThis + rowAvg + '</div>';
       }
     }
     var rows = [];
     if (mv) MOVE_STATS.forEach(function (s) { if (!s.split) rows.push(cmpRow(s, statValue(m, 'movement', s), avgOf(bm, s.key))); });
     if (h) {
-      if (rows.length) rows.push('<tr class="sub"><th colspan="5" scope="rowgroup">Frappes de balle</th></tr>');
+      if (rows.length) rows.push('<tr class="sub"><th colspan="5" scope="rowgroup">' + tr('mp.ballHits') + '</th></tr>');
       HIT_STATS.forEach(function (s) { rows.push(cmpRow(s, statValue(m, 'hits', s), avgOf(bh, s.key))); });
     }
     return html + cmpTable(rows) + '</section>';
@@ -2159,24 +2295,24 @@
       .map(function (k) { return { key: k, label: statfeedLabel(k), n: sf[k] }; })
       .sort(function (a, b) { return b.n - a.n || a.label.localeCompare(b.label); });
     if (!rows.length) return '';
-    return '<section class="card mp-card" aria-labelledby="mp-h-feed"><div class="mp-head"><h2 id="mp-h-feed">Fil de stats</h2><span class="card-meta">Vos événements dans ce match</span></div>' +
+    return '<section class="card mp-card" aria-labelledby="mp-h-feed"><div class="mp-head"><h2 id="mp-h-feed">' + tr('match.feed') + '</h2><span class="card-meta">' + tr('mp.feedSub') + '</span></div>' +
       '<ul class="mp-feed">' + rows.map(function (r) {
-        return '<li' + (r.label !== r.key ? ' title="' + esc('Événement : ' + r.key) + '"' : '') + '><span>' + esc(r.label) + '</span><b class="num">×' + r.n + '</b></li>';
+        return '<li' + (r.label !== r.key ? ' title="' + esc(tr('feed.event', { v: r.key })) + '"' : '') + '><span>' + esc(r.label) + '</span><b class="num">×' + r.n + '</b></li>';
       }).join('') + '</ul></section>';
   }
   function renderMatchPage() {
     var box = $('#view-match');
     var id = state.route.id;
-    if (!state.loaded) { box.innerHTML = '<div class="card mp-missing"><p class="muted">Chargement du match…</p></div>'; return; }
+    if (!state.loaded) { box.innerHTML = '<div class="card mp-missing"><p class="muted">' + tr('mp.loading') + '</p></div>'; return; }
     var m = id != null ? findMatch(id) : null;
     if (!m) {
-      document.title = 'Match introuvable · Rocket Tracker';
-      box.innerHTML = '<div class="card mp-missing"><h1 id="mp-title" tabindex="-1">Match introuvable</h1>' +
-        '<p class="muted">Ce match n’existe pas ou a été supprimé' + (id != null ? ' (n°' + id + ')' : '') + '.</p>' +
-        '<p><a class="btn" href="#/historique"><span aria-hidden="true">←</span> Retour à l’historique</a></p></div>';
+      document.title = tr('mp.notFound') + ' · Rocket Tracker';
+      box.innerHTML = '<div class="card mp-missing"><h1 id="mp-title" tabindex="-1">' + tr('mp.notFound') + '</h1>' +
+        '<p class="muted">' + tr('mp.notFoundText') + (id != null ? ' (' + tr('mental.bestNo', { v: id }) + ')' : '') + '.</p>' +
+        '<p><a class="btn" href="' + href('history') + '"><span aria-hidden="true">←</span> ' + tr('mp.backHistory') + '</a></p></div>';
       return;
     }
-    document.title = 'Match du ' + fmtDate(m._t, true) + ' · Rocket Tracker';
+    document.title = tr('mp.docTitle', { v: fmtDate(m._t, true) }) + ' · Rocket Tracker';
     var nb = matchNeighbors(state.all, m.id), ctx = matchContext(state.all, m.id), base = matchBaseline(state.all, m.id, 50);
     // Two independent columns (no holes when card heights differ); they stack on narrow screens.
     var right = mpMovement(m, base) + mpFeed(m);
@@ -2192,7 +2328,7 @@
     });
     v.addEventListener('click', function (e) {
       var d = e.target.closest('[data-mp-del]');
-      if (d) deleteMatch(+d.getAttribute('data-mp-del'), function () { location.hash = '#/historique'; });
+      if (d) deleteMatch(+d.getAttribute('data-mp-del'), function () { location.hash = '#/history'; });
     });
     document.addEventListener('keydown', function (e) {
       if (state.route.view !== 'match' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -2202,7 +2338,7 @@
       if (document.querySelector('dialog[open]')) return;
       var nb = matchNeighbors(state.all, state.route.id);
       var to = e.key === 'ArrowLeft' ? nb.prev : nb.next;
-      if (to) { e.preventDefault(); location.hash = '#/match/' + to.id; }
+      if (to) { e.preventDefault(); location.hash = href('match/' + to.id); }
     });
   }
 
@@ -2212,40 +2348,66 @@
     var pill = $('#conn-pill');
     var label = pill.querySelector('.pill-label');
     var w = [];
+    pill.title = tr('st.pillTip');
     if (state.statusError) {
-      pill.className = 'pill pill-warn'; label.textContent = 'Serveur injoignable';
-      w.push(warning('!', 'Le serveur Rocket Tracker ne répond pas', 'Vérifiez que <code>rltracker</code> tourne (il démarre normalement avec Windows). La page se reconnectera automatiquement.'));
+      pill.className = 'pill pill-warn'; label.textContent = tr('st.unreachable');
+      w.push(warning('!', tr('st.downTitle'), tr(isServer() ? 'st.downServer' : 'st.downLocal')));
+    } else if (s && isServer() && state.dataFor) {
+      // Another player: only their live state.
+      var who = (viewedPlayer() || {}).name || state.dataFor, ag0 = s.agent || {};
+      if (s.in_match && s.live) { pill.className = 'pill pill-live'; label.textContent = tr('st.playerPlaying', { name: who }); }
+      else if (ag0.online) { pill.className = 'pill pill-ok'; label.textContent = tr('st.playerOnline', { name: who }); }
+      else { pill.className = 'pill pill-muted'; label.textContent = tr('st.playerOffline', { name: who }); }
+      pill.title = tr('st.playerAgentTip', { name: who });
+    } else if (s && isServer()) {
+      var ag = s.agent || {};
+      pill.title = ag.device ? tr('st.agentTip', { v: ag.device }) + (ag.last_seen ? ' · ' + tr('st.lastSeen', { v: fmtDate(Date.parse(ag.last_seen), true) }) : '') : tr('st.noAgent');
+      if (s.in_match && s.live) { pill.className = 'pill pill-live'; label.textContent = tr('st.inMatch'); }
+      else if (ag.online && s.connected) { pill.className = 'pill pill-ok'; label.textContent = tr('st.connected'); }
+      else if (ag.online) { pill.className = 'pill pill-muted'; label.textContent = tr('st.noGame'); }
+      else { pill.className = 'pill pill-muted'; label.textContent = tr('st.agentOffline'); }
+      var ini2 = ag.online ? s.ini : null;
+      var dev = esc(ag.device || tr('st.yourPc'));
+      if (!ag.devices) {
+        w.push(warning('i', tr('st.noDeviceTitle'), tr('st.noDeviceText'), true));
+      } else if (!ag.last_seen) {
+        w.push(warning('i', tr('st.neverSeenTitle'), tr('st.neverSeenText'), true));
+      } else if (ag.online && !s.connected && ini2 && ini2.found && !ini2.ok) {
+        w.push(warning('!', tr('st.agentApiOff', { dev: dev }), tr('st.agentApiOffText', { v: esc(ini2.packet_send_rate) })));
+      } else if (ag.online && !s.connected && ini2 && !ini2.found) {
+        w.push(warning('!', tr('st.agentApiMissing', { dev: dev }), tr('st.agentApiMissingText')));
+      }
     } else if (s) {
-      if (s.in_match && s.live) { pill.className = 'pill pill-live'; label.textContent = 'Match en cours'; }
-      else if (s.connected) { pill.className = 'pill pill-ok'; label.textContent = 'Connecté à Rocket League'; pill.title = 'Transport : ' + (s.transport === 'tcp' ? 'TCP' : s.transport === 'ws' ? 'WebSocket' : '—'); }
-      else { pill.className = 'pill pill-muted'; label.textContent = 'Rocket League non détecté'; }
+      if (s.in_match && s.live) { pill.className = 'pill pill-live'; label.textContent = tr('st.inMatch'); }
+      else if (s.connected) { pill.className = 'pill pill-ok'; label.textContent = tr('st.connected'); pill.title = tr('st.transport', { v: s.transport === 'tcp' ? 'TCP' : s.transport === 'ws' ? 'WebSocket' : '—' }); }
+      else { pill.className = 'pill pill-muted'; label.textContent = tr('st.noGame'); }
       var ini = s.ini || null;
       // Connected = the Stats API evidently works (the ini may sit in an undetected install dir): no setup warning.
       if (s.connected) { /* ok */ }
       else if (ini && !ini.found) {
-        w.push(warning('!', 'API Stats de Rocket League non configurée', 'Fichier introuvable' + (ini.path ? ' (<code>' + esc(ini.path) + '</code>)' : '') + '. Lancez <code>rltracker setup</code>, puis redémarrez Rocket League.'));
+        w.push(warning('!', tr('st.apiMissing'), tr('st.apiMissingText', { path: ini.path ? ' (<code>' + esc(ini.path) + '</code>)' : '' })));
       } else if (ini && !ini.ok) {
-        w.push(warning('!', 'API Stats de Rocket League désactivée', 'PacketSendRate = ' + esc(ini.packet_send_rate) + '. Lancez <code>rltracker setup</code> (ou mettez PacketSendRate=30 dans <code>' + esc(ini.path || 'DefaultStatsAPI.ini') + '</code>), puis redémarrez Rocket League.'));
+        w.push(warning('!', tr('st.apiOff'), tr('st.apiOffText', { v: esc(ini.packet_send_rate), path: esc(ini.path || 'DefaultStatsAPI.ini') })));
       } else if (!s.connected) {
-        w.push(warning('i', 'En attente de Rocket League', 'Lancez le jeu : la connexion se fera automatiquement. Si le jeu est déjà ouvert, redémarrez-le après <code>rltracker setup</code>.', true));
+        w.push(warning('i', tr('st.waitingTitle'), tr('st.waitingText'), true));
       }
     }
     $('#warnings').innerHTML = w.join('');
     var ver = s && s.version ? 'Rocket Tracker v' + s.version : 'Rocket Tracker';
-    $('#footer-version').textContent = ver + (MOCK ? ' · mode démo' : '');
+    $('#footer-version').textContent = ver + (MOCK ? ' · ' + tr('st.demo') : '');
 
     var live = $('#live');
     if (s && s.in_match && s.live) {
-      var L = s.live, me = L.me || {};
+      var Lv = s.live, me = Lv.me || {};
       live.hidden = false;
       live.innerHTML =
-        '<div><div class="live-tag"><span class="dot"></span>En direct</div><div class="live-meta">' + esc(L.mode || '') + ' · ' + esc(prettyArena(L.arena)) +
-          (L.me ? ' · équipe ' + (L.my_team === 1 ? 'orange' : 'bleue') : '') + '</div></div>' +
-        '<div class="live-score" aria-label="Score"><span class="us" title="Votre équipe">' + fmtNum(L.team_score) + '</span>' +
-        '<span class="clock' + (L.overtime ? ' ot' : '') + '">' + (L.overtime ? '+' : '') + fmtClock(L.time_seconds) + '</span>' +
-        '<span class="them" title="Adversaires">' + fmtNum(L.opp_score) + '</span></div>' +
-        '<div class="live-me">' + [['Score', me.score], ['Buts', me.goals], ['Passes', me.assists], ['Arrêts', me.saves], ['Tirs', me.shots]]
-          .map(function (x) { return '<span><b>' + fmtNum(x[1]) + '</b>' + x[0] + '</span>'; }).join('') + '</div>';
+        '<div><div class="live-tag"><span class="dot"></span>' + tr('st.live') + (state.dataFor ? ' · ' + esc((viewedPlayer() || {}).name || state.dataFor) : '') + '</div><div class="live-meta">' + esc(Lv.mode || '') + ' · ' + esc(prettyArena(Lv.arena)) +
+          (Lv.me ? ' · ' + tr(Lv.my_team === 1 ? 'st.teamOrange' : 'st.teamBlue') : '') + '</div></div>' +
+        '<div class="live-score" aria-label="' + esc(tr('perf.score')) + '"><span class="us" title="' + esc(tr('match.yourTeam')) + '">' + fmtNum(Lv.team_score) + '</span>' +
+        '<span class="clock' + (Lv.overtime ? ' ot' : '') + '">' + (Lv.overtime ? '+' : '') + fmtClock(Lv.time_seconds) + '</span>' +
+        '<span class="them" title="' + esc(tr('match.opponents')) + '">' + fmtNum(Lv.opp_score) + '</span></div>' +
+        '<div class="live-me">' + ['score', 'goals', 'assists', 'saves', 'shots']
+          .map(function (k) { return '<span><b>' + fmtNum(me[k]) + '</b>' + tr('perf.' + k) + '</span>'; }).join('') + '</div>';
     } else {
       live.hidden = true;
       live.innerHTML = '';
@@ -2261,9 +2423,7 @@
     $$('#f-mode button').forEach(function (b) { b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(b.dataset.v === f.mode)); });
     $$('#f-period button').forEach(function (b) { b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(b.dataset.v === String(f.period))); });
     var tagSel = $('#f-tag');
-    var tags = TAGS.slice();
-    state.all.forEach(function (m) { if (m.tag && tags.indexOf(m.tag) < 0) tags.push(m.tag); });
-    tagSel.innerHTML = '<option value="all">Tous</option>' + tags.map(function (t) { return '<option value="' + esc(t) + '">' + esc(TAG_LABELS[t] || t) + '</option>'; }).join('');
+    tagSel.innerHTML = tagFilterOptions();
     tagSel.value = f.tag;
     if (tagSel.value !== f.tag) { f.tag = 'all'; tagSel.value = 'all'; }
     $('#f-online').checked = !!f.onlineOnly;
@@ -2295,12 +2455,21 @@
     syncNav();
     $('#view-history').hidden = view !== 'history';
     $('#view-match').hidden = view !== 'match';
+    $('#view-players').hidden = view !== 'players';
+    $('#export-csv').href = apiBase() + '/export.csv';
+    $('#recent-all').href = href('history');
+    $$('[data-goal-edit]').forEach(function (el) { el.hidden = readOnly(); });
     if (view !== 'dash') {
       $('#onboarding').hidden = true;
       $('#dashboard').hidden = true;
-      try { if (view === 'history') renderHistory(); else renderMatchPage(); } catch (e) { console.error('render failed: ' + view, e); }
+      try {
+        if (view === 'history') renderHistory(); else if (view === 'players') renderPlayers(); else renderMatchPage();
+      } catch (e) { console.error('render failed: ' + view, e); }
       return;
     }
+    // Data of another player still loading: show nothing stale.
+    if ((state.route.player || '') !== state.dataFor) { $('#onboarding').hidden = true; $('#dashboard').hidden = true; return; }
+    renderOnboarding();
     var has = state.all.length > 0;
     $('#onboarding').hidden = has || !state.loaded;
     // The season goal (and manual entry) is available even before the first tracked match.
@@ -2312,7 +2481,7 @@
     var ms = filterMatches(state.all, state.filters);
     state.filtered = ms;
     var total = state.all.length;
-    $('#filter-count').textContent = ms.length + ' match' + (ms.length > 1 ? 's' : '') + ' sur ' + total;
+    $('#filter-count').textContent = tr('filters.count', { v: plural(ms.length, 'match'), total: fmtNum(total) });
     var empty = ms.length === 0;
     $('#no-results').hidden = !empty;
     $('#content').hidden = empty;
@@ -2326,20 +2495,26 @@
   }
 
   /* ---------- data loading ---------- */
+  // Each loader drops its answer when the viewed player changed meanwhile (state.gen).
   function loadMatches() {
-    return apiFetch('/api/matches').then(function (data) {
+    var gen = state.gen;
+    return apiFetch(apiBase() + '/matches').then(function (data) {
+      if (gen !== state.gen) return;
       state.all = annotate(Array.isArray(data) ? data : []);
       state.loaded = true;
       renderAll();
     }).catch(function (e) {
+      if (gen !== state.gen) return;
       console.warn('matches', e);
       state.loaded = true;
       if (!state.all.length) renderAll();
-      toast('Impossible de charger les matchs (' + e.message + ')', true);
+      toast(tr('toast.loadFailed', { v: e.message }), true);
     });
   }
   function pollStatus() {
-    return apiFetch('/api/status').then(function (s) {
+    var gen = state.gen;
+    return apiFetch(apiBase() + '/status').then(function (s) {
+      if (gen !== state.gen) return;
       state.status = s; state.statusError = false;
       renderStatus();
       if (s && isNum(s.match_count)) {
@@ -2347,8 +2522,25 @@
         state.lastCount = s.match_count;
       }
     }).catch(function () {
+      if (gen !== state.gen) return;
       state.statusError = true;
       renderStatus();
+    });
+  }
+  function loadConfig() {
+    var gen = state.gen;
+    return apiFetch(apiBase() + '/config').then(function (c) { if (gen === state.gen) state.config = c || null; })
+      .catch(function (e) { console.warn('config', e); });
+  }
+  /** (Re)loads everything for the player of the current route. */
+  function loadAll() {
+    state.dataFor = state.route.player || '';
+    state.gen++;
+    Object.assign(state, { all: [], filtered: [], manual: [], config: null, status: null, lastCount: null, loaded: false, open: {}, shown: PAGE_SIZE, histShown: HIST_PAGE });
+    renderStatus();
+    var gen = state.gen;
+    return Promise.all([pollStatus(), Promise.all([loadConfig(), loadManual()]).then(loadMatches)]).then(function () {
+      if (gen === state.gen && state.status && isNum(state.status.match_count)) state.lastCount = state.status.match_count;
     });
   }
 
@@ -2359,9 +2551,9 @@
       var del = e.target.closest('[data-del]');
       if (del) { e.stopPropagation(); deleteMatch(+del.dataset.del); return; }
       if (e.target.closest('select, button, a')) return;
-      var tr = e.target.closest('tr.row');
-      if (!tr) return;
-      toggleRow(+tr.dataset.id);
+      var row = e.target.closest('tr.row');
+      if (!row) return;
+      toggleRow(+row.dataset.id);
     });
     tbl.addEventListener('keydown', function (e) {
       if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr.row')) { e.preventDefault(); toggleRow(+e.target.dataset.id); }
@@ -2385,25 +2577,25 @@
     sel.disabled = true;
     apiFetch('/api/matches/' + id, { method: 'PATCH', body: JSON.stringify({ tag: tag }) }).then(function (upd) {
       if (m) m.tag = (upd && upd.tag) || tag;
-      toast('Type mis à jour : ' + (TAG_LABELS[tag] || tag));
+      toast(tr('toast.tagUpdated', { v: tagLabel(tag) }));
       renderAll();
     }).catch(function (e) {
       sel.value = prev; sel.disabled = false;
-      toast('Échec de la mise à jour (' + e.message + ')', true);
+      toast(tr('toast.updateFailed', { v: e.message }), true);
     });
   }
   function deleteMatch(id, after) {
     var m = findMatch(id);
     if (!m) return;
     var desc = fmtDate(m._t, true) + ' · ' + (m.mode || '') + ' · ' + num(m.team_score) + '–' + num(m.opp_score);
-    if (!window.confirm('Supprimer définitivement ce match ?\n\n' + desc)) return;
+    if (!window.confirm(tr('confirm.deleteMatch') + '\n\n' + desc)) return;
     apiFetch('/api/matches/' + id, { method: 'DELETE' }).then(function () {
       state.all = annotate(state.all.filter(function (x) { return x.id !== id; }));
       delete state.open[id];
       if (state.lastCount != null) state.lastCount = Math.max(0, state.lastCount - 1);
-      toast('Match supprimé');
+      toast(tr('toast.deleted'));
       if (after) after(); else renderAll();
-    }).catch(function (e) { toast('Suppression impossible (' + e.message + ')', true); });
+    }).catch(function (e) { toast(tr('toast.deleteFailed', { v: e.message }), true); });
   }
 
   /* ---------- settings ---------- */
@@ -2412,8 +2604,9 @@
     var dlg = $('#settings');
     var form = $('#settings-form');
     var msg = $('#settings-msg');
-    msg.textContent = 'Chargement…'; msg.className = 'form-msg';
+    msg.textContent = tr('common.loading'); msg.className = 'form-msg';
     form.elements.default_tag.innerHTML = tagOptions('ranked');
+    form.elements.lang.value = I18N.getLang();
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
     apiFetch('/api/config').then(function (c) {
       currentConfig = c || {};
@@ -2427,7 +2620,7 @@
       form.elements.goal_start.value = goal.season_start || '';
       form.elements.goal_end.value = goal.season_end || '';
       msg.textContent = '';
-    }).catch(function (e) { msg.textContent = 'Impossible de lire la configuration (' + e.message + ')'; msg.className = 'form-msg err'; });
+    }).catch(function (e) { msg.textContent = tr('settings.readFailed', { v: e.message }); msg.className = 'form-msg err'; });
   }
   function bindSettings() {
     var dlg = $('#settings');
@@ -2451,15 +2644,17 @@
         }
       });
       var msg = $('#settings-msg');
-      msg.textContent = 'Enregistrement…'; msg.className = 'form-msg';
+      msg.textContent = tr('common.saving'); msg.className = 'form-msg';
+      var lang = form.elements.lang.value;
       apiFetch('/api/config', { method: 'PUT', body: JSON.stringify(cfg) }).then(function (c) {
         currentConfig = c || cfg;
-        state.config = currentConfig;
+        if (!state.dataFor) state.config = currentConfig;
         dlg.close ? dlg.close() : dlg.removeAttribute('open');
-        toast('Réglages enregistrés');
+        if (lang !== I18N.getLang()) { I18N.save(lang); location.reload(); return; }
+        toast(tr('toast.settingsSaved'));
         renderAll();
         pollStatus();
-      }).catch(function (err) { msg.textContent = 'Échec de l’enregistrement (' + err.message + ')'; msg.className = 'form-msg err'; });
+      }).catch(function (err) { msg.textContent = tr('toast.saveFailed', { v: err.message }); msg.className = 'form-msg err'; });
     });
   }
 
@@ -2467,7 +2662,8 @@
   var MANUAL_MODES = ['1v1', '2v2', '3v3', '4v4'];
   var dayDialogKey = null;
   function loadManual() {
-    return apiFetch('/api/manual').then(function (d) { state.manual = Array.isArray(d) ? d : []; })
+    var gen = state.gen;
+    return apiFetch(apiBase() + '/manual').then(function (d) { if (gen === state.gen) state.manual = Array.isArray(d) ? d : []; })
       .catch(function (e) { console.warn('manual', e); });
   }
   function manualFor(day, mode) {
@@ -2477,15 +2673,15 @@
     dayDialogKey = day;
     var dlg = $('#day-dialog');
     var t = parseDay(day);
-    var title = new Date(t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    var title = fmtDay(t, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     $('#day-title').textContent = title.charAt(0).toUpperCase() + title.slice(1);
     var tracked = trackedByMode(state.all, day);
     $('#day-rows').innerHTML = MANUAL_MODES.map(function (mode) {
-      var tr = tracked[mode] || { games: 0, wins: 0 }, mn = manualFor(day, mode);
+      var tk = tracked[mode] || { games: 0, wins: 0 }, mn = manualFor(day, mode);
       return '<tr data-mode="' + mode + '"><th scope="row">' + mode + '</th>' +
-        '<td class="r muted">' + (tr.games ? tr.games + ' <small>(' + tr.wins + ' V)</small>' : '—') + '</td>' +
-        '<td><input type="number" min="0" max="500" step="1" inputmode="numeric" name="g-' + mode + '" value="' + num(mn.games) + '" aria-label="Games ' + mode + ' saisies"></td>' +
-        '<td><input type="number" min="0" max="500" step="1" inputmode="numeric" name="w-' + mode + '" value="' + num(mn.wins) + '" aria-label="Victoires ' + mode + ' saisies"></td></tr>';
+        '<td class="r muted">' + (tk.games ? tk.games + ' <small>(' + tk.wins + ' ' + tr('res.win.short') + ')</small>' : '—') + '</td>' +
+        '<td><input type="number" min="0" max="500" step="1" inputmode="numeric" name="g-' + mode + '" value="' + num(mn.games) + '" aria-label="' + esc(tr('day.gamesAria', { mode: mode })) + '"></td>' +
+        '<td><input type="number" min="0" max="500" step="1" inputmode="numeric" name="w-' + mode + '" value="' + num(mn.wins) + '" aria-label="' + esc(tr('day.winsAria', { mode: mode })) + '"></td></tr>';
     }).join('');
     var msg = $('#day-msg'); msg.textContent = ''; msg.className = 'form-msg';
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
@@ -2503,21 +2699,21 @@
       for (var i = 0; i < MANUAL_MODES.length; i++) {
         var mode = MANUAL_MODES[i];
         var g = parseInt(form.elements['g-' + mode].value || '0', 10), w = parseInt(form.elements['w-' + mode].value || '0', 10);
-        if (!isNum(g) || !isNum(w) || g < 0 || w < 0 || g > 500) { msg.textContent = mode + ' : nombre invalide'; msg.className = 'form-msg err'; return; }
-        if (w > g) { msg.textContent = mode + ' : plus de victoires que de games'; msg.className = 'form-msg err'; return; }
+        if (!isNum(g) || !isNum(w) || g < 0 || w < 0 || g > 500) { msg.textContent = tr('day.invalid', { mode: mode }); msg.className = 'form-msg err'; return; }
+        if (w > g) { msg.textContent = tr('day.tooManyWins', { mode: mode }); msg.className = 'form-msg err'; return; }
         var cur = manualFor(day, mode);
         if (g !== num(cur.games) || (g > 0 && w !== num(cur.wins))) changes.push({ mode: mode, games: g, wins: g ? w : 0 });
       }
       if (!changes.length) { dlg.close ? dlg.close() : dlg.removeAttribute('open'); return; }
-      msg.textContent = 'Enregistrement…'; msg.className = 'form-msg';
+      msg.textContent = tr('common.saving'); msg.className = 'form-msg';
       Promise.all(changes.map(function (c) {
         return apiFetch('/api/manual/' + day + '/' + c.mode, { method: 'PUT', body: JSON.stringify({ games: c.games, wins: c.wins }) });
       })).then(loadManual).then(function () {
         dlg.close ? dlg.close() : dlg.removeAttribute('open');
-        toast('Games du ' + new Date(parseDay(day)).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + ' enregistrées');
+        toast(tr('toast.daySaved', { v: fmtDay(parseDay(day), { day: 'numeric', month: 'long' }) }));
         renderAll();
       }).catch(function (err) {
-        msg.textContent = 'Échec de l’enregistrement (' + err.message + ')'; msg.className = 'form-msg err';
+        msg.textContent = tr('toast.saveFailed', { v: err.message }); msg.className = 'form-msg err';
         loadManual().then(renderAll);
       });
     });
@@ -2533,8 +2729,249 @@
     toastTimer = setTimeout(function () { t.hidden = true; }, isErr ? 5000 : 2500);
   }
 
+  /* ---------- server mode: accounts, players, devices ---------- */
+  var ONBOARDING_LOCAL = null;
+  function applyMode() {
+    var srv = isServer();
+    $('#nav-players').hidden = !srv;
+    $('#user-menu').hidden = !srv;
+    $$('.local-only').forEach(function (el) { el.hidden = srv; });
+    if (srv && state.me) {
+      $('#me-name').textContent = state.me.name || state.me.handle;
+      $('#me-avatar').textContent = initial(state.me.name || state.me.handle);
+      $('#me-avatar').style.background = avatarColor(state.me.handle);
+    }
+    $('#footer-note').textContent = tr(srv ? 'footer.server' : 'footer.local');
+  }
+  function initial(s) { return String(s || '?').trim().charAt(0).toUpperCase() || '?'; }
+  function avatarColor(seed) {
+    var h = 0, s = String(seed || '');
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return 'hsl(' + (h % 360) + ' 55% 42%)';
+  }
+  function avatar(p, cls) {
+    return '<span class="avatar' + (cls ? ' ' + cls : '') + '" style="background:' + avatarColor(p.handle) + '" aria-hidden="true">' + esc(initial(p.name || p.handle)) + '</span>';
+  }
+
+  function renderOnboarding() {
+    var card = $('#onboarding .onboarding-card');
+    if (ONBOARDING_LOCAL == null) ONBOARDING_LOCAL = card.innerHTML;
+    var art = card.querySelector('.onboarding-art');
+    var artHtml = art ? art.outerHTML : '';
+    if (state.dataFor) {
+      var p = viewedPlayer();
+      card.innerHTML = artHtml + '<h1>' + tr('onb.playerEmpty', { name: esc(p.name) }) + '</h1><p class="lead">' + tr('onb.playerEmptyText') + '</p>' +
+        '<p><a class="btn" href="#/players"><span aria-hidden="true">←</span> ' + tr('onb.allPlayers') + '</a></p>';
+    } else if (isServer()) {
+      card.innerHTML = artHtml + '<h1>' + (state.me ? tr('onb.welcomeName', { name: esc(state.me.name) }) : tr('onb.welcome')) + '</h1>' +
+        '<p class="lead">' + tr('onb.serverLead') + '</p>' +
+        '<ol class="steps">' +
+        '<li><span class="step-n">1</span><div>' + tr('onb.server1') + '</div></li>' +
+        '<li><span class="step-n">2</span><div>' + tr('onb.server2') + '</div></li>' +
+        '<li><span class="step-n">3</span><div>' + tr('onb.server3') + '</div></li>' +
+        '</ol>';
+    } else {
+      card.innerHTML = ONBOARDING_LOCAL;
+    }
+  }
+
+  function renderPlayerBanner() {
+    var box = $('#player-banner');
+    var p = viewedPlayer();
+    if (!p || state.route.view === 'players') { box.hidden = true; box.innerHTML = ''; return; }
+    var v = state.route.view;
+    var tab = function (path, label, on) {
+      return '<a href="' + routeHash(p.handle, path) + '"' + (on ? ' aria-current="page"' : '') + '>' + label + '</a>';
+    };
+    var names = (p.game_names || []).filter(function (n) { return normText(n) !== normText(p.name); });
+    box.hidden = false;
+    box.innerHTML = avatar(p, 'lg') +
+      '<div class="pb-who"><span class="pb-label">' + tr('pb.statsOf') + '</span><strong>' + esc(p.name) + '</strong>' +
+        '<span class="pb-meta">@' + esc(p.handle) + (names.length ? ' · ' + tr('pb.inGame', { v: names.map(esc).join(', ') }) : '') + '</span></div>' +
+      '<nav class="pb-tabs" aria-label="' + esc(tr('pb.pagesOf', { name: p.name })) + '">' + tab('', tr('nav.dash'), v === 'dash') + tab('history', tr('nav.history'), v !== 'dash') + '</nav>' +
+      '<a class="btn btn-ghost pb-back" href="#/players"><span aria-hidden="true">←</span> ' + tr('nav.players') + '</a>';
+  }
+
+  function loadPlayers() {
+    if (!isServer()) return Promise.resolve();
+    var lb = state.lb;
+    var q = '?mode=' + encodeURIComponent(lb.mode) + '&tag=' + encodeURIComponent(lb.tag) + '&days=' + encodeURIComponent(lb.period);
+    return Promise.all([apiFetch('/api/players'), apiFetch('/api/leaderboard' + q)]).then(function (res) {
+      state.players = Array.isArray(res[0]) ? res[0] : [];
+      state.leaders = Array.isArray(res[1]) ? res[1] : [];
+      if (state.route.view === 'players') renderPlayers(); else syncNav();
+    }).catch(function (e) { console.warn('players', e); });
+  }
+
+  function ago(iso) {
+    var t = Date.parse(iso);
+    if (!isNum(t)) return 'jamais';
+    var d = Math.floor((startOfDay(Date.now()) - startOfDay(t)) / DAY_MS);
+    return d <= 0 ? tr('common.today') : d === 1 ? tr('common.yesterday') : d < 30 ? tr('common.daysAgo', { v: d }) : tr('common.onDate', { date: fmtDay(t, { day: 'numeric', month: 'short', year: 'numeric' }) });
+  }
+  function playerCard(p) {
+    var st = p.in_match && p.live
+      ? '<span class="ps live"><span class="dot"></span>' + tr('pl.inMatch') + ' · ' + esc(p.live.mode || '') + ' · ' + fmtNum(p.live.team_score) + '–' + fmtNum(p.live.opp_score) + '</span>'
+      : p.online ? '<span class="ps on"><span class="dot"></span>' + tr('pl.agentOnline') + '</span>' : '<span class="ps"><span class="dot"></span>' + tr('badge.offline') + '</span>';
+    var names = (p.game_names || []).filter(function (n) { return normText(n) !== normText(p.name); });
+    return '<a class="card player-card' + (p.is_me ? ' me' : '') + '" href="' + (p.is_me ? '#/' : routeHash(p.handle, '')) + '">' + avatar(p) +
+      '<span class="pc-main"><span class="pc-name">' + esc(p.name) + (p.is_me ? ' <span class="chip">' + tr('common.you') + '</span>' : '') + '</span>' +
+        '<span class="pc-meta">@' + esc(p.handle) + (names.length ? ' · ' + names.map(esc).join(', ') : '') + '</span>' + st + '</span>' +
+      '<span class="pc-stats"><b class="num">' + fmtNum(p.matches) + '</b><span>' + tr('unit.match', { n: p.matches }) + '</span>' +
+        '<span class="pc-last">' + (p.last_played ? tr('pl.last', { v: ago(p.last_played) }) : tr('pl.noMatch')) + '</span></span></a>';
+  }
+
+  var LB_COLS = [
+    ['rank', '#', '', null], ['name', 'match.player', '', 1], ['games', 'kpi.matches', 'r', -1], ['winrate', 'kpi.winrate', 'r', -1],
+    ['goal_diff_avg', 'tbl.diff', 'r', -1], ['score_avg', 'perf.score', 'r hide-mobile', -1], ['goals_avg', 'perf.goals', 'r hide-mobile', -1],
+    ['assists_avg', 'perf.assists', 'r hide-mobile', -1], ['saves_avg', 'perf.saves', 'r hide-mobile', -1], ['shots_avg', 'perf.shots', 'r hide-mobile', -1],
+    ['mvp_rate', 'feed.MVP', 'r hide-mobile', -1]
+  ];
+  function renderLeaders() {
+    var lb = state.lb;
+    var all = rankLeaders(state.leaders || [], lb.sort, lb.dir, lb.min);
+    var shown = filterPlayers(all, state.playersQ);
+    var head = '<thead><tr>' + LB_COLS.map(function (c) {
+      if (!c[3]) return '<th class="c" style="width:44px">' + c[1] + '</th>';
+      var on = lb.sort === c[0];
+      return '<th class="' + c[2] + '" aria-sort="' + (on ? (lb.dir === 1 ? 'ascending' : 'descending') : 'none') + '"><button type="button" class="th-sort' + (on ? ' on' : '') +
+        '" data-sort="' + c[0] + '" data-dir="' + c[3] + '">' + tr(c[1]) + (on ? '<span aria-hidden="true">' + (lb.dir === 1 ? ' ▲' : ' ▼') + '</span>' : '') + '</button></th>';
+    }).join('') + '</tr></thead>';
+    var hidden = (state.leaders || []).length - all.length;
+    var body;
+    if (!state.leaders) body = '<tr class="empty-row"><td colspan="11">' + tr('common.loading') + '</td></tr>';
+    else if (!shown.length) body = '<tr class="empty-row"><td colspan="11">' + tr(all.length ? 'lb.noSearch' : 'lb.noPlayer') + '</td></tr>';
+    else body = shown.map(function (r) {
+      var wr = isNum(r.winrate) ? r.winrate : null;
+      return '<tr class="' + (r.is_me ? 'me' : '') + '"><td class="c"><span class="lb-rank r' + Math.min(r.rank, 4) + '">' + r.rank + '</span></td>' +
+        '<td><a class="lb-player" href="' + (r.is_me ? '#/' : routeHash(r.handle, '')) + '">' + avatar(r, 'sm') + '<span>' + esc(r.name) + '</span>' + (r.is_me ? ' <span class="chip">vous</span>' : '') + '</a></td>' +
+        '<td class="r num">' + fmtNum(r.games) + '<span class="muted small hide-mobile"> (' + r.wins + '–' + r.losses + ')</span></td>' +
+        '<td class="r num"><span class="lb-wr"><span class="lb-bar"><i style="width:' + (wr == null ? 0 : Math.round(wr * 100)) + '%"></i></span><b>' + fmtPct(wr) + '</b></span></td>' +
+        '<td class="r num ' + signCls(r.goal_diff_avg) + '">' + fmtSigned(r.goal_diff_avg, 2) + '</td>' +
+        '<td class="r num hide-mobile">' + fmtNum(r.score_avg) + '</td>' +
+        '<td class="r num hide-mobile">' + fmtNum(r.goals_avg, 2) + '</td>' +
+        '<td class="r num hide-mobile">' + fmtNum(r.assists_avg, 2) + '</td>' +
+        '<td class="r num hide-mobile">' + fmtNum(r.saves_avg, 2) + '</td>' +
+        '<td class="r num hide-mobile">' + fmtNum(r.shots_avg, 2) + '</td>' +
+        '<td class="r num hide-mobile">' + fmtPct(r.mvp_rate) + '</td></tr>';
+    }).join('');
+    $('#t-leaders').innerHTML = head + '<tbody>' + body + '</tbody>';
+    $('#lb-note').textContent = hidden > 0 ? tr('lb.unranked', { n: hidden, v: fmtNum(hidden), min: lb.min }) : '';
+  }
+  function syncLbUi() {
+    var lb = state.lb;
+    [['#lb-mode', 'mode'], ['#lb-period', 'period']].forEach(function (x) {
+      $$(x[0] + ' button').forEach(function (b) { b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(b.dataset.v === String(lb[x[1]]))); });
+    });
+    var tagSel = $('#lb-tag');
+    if (!tagSel.options.length) tagSel.innerHTML = '<option value="all">' + tr('common.all') + '</option>' + TAGS.map(function (t) { return '<option value="' + t + '">' + esc(tagLabel(t)) + '</option>'; }).join('');
+    tagSel.value = lb.tag;
+    $('#lb-min').value = String(lb.min);
+  }
+  function renderPlayers() {
+    syncLbUi();
+    var q = $('#p-q');
+    if (document.activeElement !== q && q.value !== state.playersQ) q.value = state.playersQ;
+    var box = $('#players-list');
+    if (!state.players) box.innerHTML = '<div class="hist-empty muted">' + tr('common.loading') + '</div>';
+    else {
+      var ps = filterPlayers(state.players, state.playersQ).slice().sort(function (a, b) {
+        return (b.in_match - a.in_match) || (b.online - a.online) || String(b.last_played).localeCompare(String(a.last_played)) || a.name.localeCompare(b.name);
+      });
+      $('#players-count').textContent = state.playersQ ? tr('pl.countOf', { v: ps.length, total: plural(state.players.length, 'player') })
+        : tr('pl.count', { n: state.players.length, v: fmtNum(state.players.length) });
+      box.innerHTML = ps.length ? ps.map(playerCard).join('') : '<div class="no-results"><p><strong>' + tr('pl.noMatchSearch', { q: esc(state.playersQ) }) + '</strong></p><p class="muted">' + tr('pl.searchHint') + '</p></div>';
+    }
+    renderLeaders();
+  }
+  function bindPlayers() {
+    $('#p-q').addEventListener('input', function (e) { state.playersQ = e.target.value; renderPlayers(); });
+    function seg(id, key) {
+      $(id).addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-v]');
+        if (!b) return;
+        state.lb[key] = b.dataset.v;
+        saveLbFilters(); state.leaders = null; renderLeaders(); loadPlayers();
+      });
+    }
+    seg('#lb-mode', 'mode');
+    seg('#lb-period', 'period');
+    $('#lb-tag').addEventListener('change', function (e) { state.lb.tag = e.target.value; saveLbFilters(); state.leaders = null; renderLeaders(); loadPlayers(); });
+    $('#lb-min').addEventListener('change', function (e) { state.lb.min = parseInt(e.target.value, 10) || 0; saveLbFilters(); renderLeaders(); });
+    $('#t-leaders').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-sort]');
+      if (!b) return;
+      var k = b.getAttribute('data-sort');
+      if (state.lb.sort === k) state.lb.dir = -state.lb.dir; else { state.lb.sort = k; state.lb.dir = +b.getAttribute('data-dir'); }
+      saveLbFilters(); renderLeaders();
+    });
+  }
+
+  /* devices (agent tokens) */
+  function openDevices() {
+    var dlg = $('#devices');
+    $('#device-new').hidden = true;
+    $('#devices-msg').textContent = '';
+    $('#devices-form').elements.name.value = '';
+    if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+    loadDevices();
+  }
+  function loadDevices() {
+    var box = $('#devices-list');
+    box.innerHTML = '<p class="muted small">' + tr('common.loading') + '</p>';
+    return apiFetch('/api/devices').then(function (ds) {
+      ds = Array.isArray(ds) ? ds : [];
+      box.innerHTML = ds.length ? '<ul class="dev-list">' + ds.map(function (d) {
+        return '<li><span class="ps' + (d.online ? ' on' : '') + '" title="' + esc(tr(d.online ? 'pl.agentOnline' : 'st.agentOffline')) + '"><span class="dot"></span></span>' +
+          '<span class="dev-main"><b>' + esc(d.name) + '</b><span class="muted small">' + tr('dev.created', { v: ago(d.created_at) }) + ' · ' +
+          (d.last_seen_at ? tr('dev.lastSeen', { v: d.online ? tr('dev.now') : ago(d.last_seen_at) }) : tr('dev.never')) + '</span></span>' +
+          '<button type="button" class="btn btn-ghost btn-danger" data-revoke="' + d.id + '" data-name="' + esc(d.name) + '">' + tr('dev.revoke') + '</button></li>';
+      }).join('') + '</ul>' : '<p class="muted small">' + tr('dev.none') + '</p>';
+    }).catch(function (e) { box.innerHTML = '<p class="form-msg err">' + tr('dev.listFailed', { v: esc(e.message) }) + '</p>'; });
+  }
+  function bindDevices() {
+    var dlg = $('#devices'), form = $('#devices-form');
+    document.addEventListener('click', function (e) {
+      if (e.target.closest('[data-open-devices]')) { e.preventDefault(); openDevices(); }
+    });
+    $$('[data-close]', dlg).forEach(function (b) { b.addEventListener('click', function () { dlg.close ? dlg.close() : dlg.removeAttribute('open'); }); });
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var msg = $('#devices-msg');
+      msg.textContent = tr('dev.creating'); msg.className = 'form-msg';
+      apiFetch('/api/devices', { method: 'POST', body: JSON.stringify({ name: form.elements.name.value.trim() }) }).then(function (r) {
+        msg.textContent = '';
+        form.elements.name.value = '';
+        $('#device-cmd').textContent = 'rltracker agent setup --server ' + r.server + ' --token ' + r.token;
+        $('#device-new-text').innerHTML = tr('dev.newText', { name: esc(r.device.name) });
+        $('#device-new').hidden = false;
+        loadDevices();
+        pollStatus();
+      }).catch(function (err) { msg.textContent = tr('dev.createFailed', { v: err.message }); msg.className = 'form-msg err'; });
+    });
+    $('#device-copy').addEventListener('click', function () {
+      var txt = $('#device-cmd').textContent;
+      var done = function () { toast(tr('dev.copied')); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, function () { selectText($('#device-cmd')); });
+      else selectText($('#device-cmd'));
+    });
+    $('#devices-list').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-revoke]');
+      if (!b) return;
+      if (!confirm(tr('dev.confirmRevoke', { name: b.getAttribute('data-name') }))) return;
+      apiFetch('/api/devices/' + b.getAttribute('data-revoke'), { method: 'DELETE' }).then(function () {
+        toast(tr('dev.revoked')); loadDevices(); pollStatus();
+      }).catch(function (err) { toast(tr('dev.revokeFailed', { v: err.message }), true); });
+    });
+  }
+  function selectText(el) {
+    var r = document.createRange(); r.selectNodeContents(el);
+    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  }
+
   /* ---------- boot ---------- */
   function boot() {
+    I18N.apply(document);
     bindFilters();
     bindTable();
     bindSettings();
@@ -2545,7 +2982,7 @@
     syncNav();
     if (state.route.view !== 'dash') renderAll();
     if (MOCK) {
-      $('#export-csv').addEventListener('click', function (e) { e.preventDefault(); toast('Export CSV indisponible en mode démo'); });
+      $('#export-csv').addEventListener('click', function (e) { e.preventDefault(); toast(tr('toast.noCsvDemo')); });
     }
     if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: light)');
@@ -2554,11 +2991,21 @@
     }
     readTheme();
     applyChartDefaults();
-    var cfgReady = apiFetch('/api/config').then(function (c) { state.config = c || null; }).catch(function (e) { console.warn('config', e); });
-    Promise.all([pollStatus(), Promise.all([cfgReady, loadManual()]).then(loadMatches)]).then(function () {
-      if (state.status && isNum(state.status.match_count)) state.lastCount = state.status.match_count;
+    bindPlayers();
+    bindDevices();
+    apiFetch('/api/session').catch(function () { return { mode: 'local' }; }).then(function (s) {
+      state.mode = s && s.mode === 'server' ? 'server' : 'local';
+      state.me = (s && s.user) || null;
+      applyMode();
+      var self = selfRoute(state.route);
+      if (self) { location.replace(self); state.route = parseRoute(self); }
+      if (!isServer() && (state.route.player || state.route.view === 'players')) { location.replace('#/'); state.route = parseRoute('#/'); }
+      if (isServer()) loadPlayers();
+      loadAll();
+      renderAll();
     });
     setInterval(pollStatus, 3000);
+    setInterval(function () { if (isServer() && state.route.view === 'players') loadPlayers(); }, 10000);
     // Re-render the activity window when the day changes (cheap, once per 10 min).
     setInterval(function () { if (state.all.length) renderAll(); }, 10 * 60 * 1000);
   }

@@ -1,0 +1,26 @@
+# Rocket Tracker server behind your reverse proxy, signing in with Authentik.
+# Copy to docker-compose.yml, fill in the values, then: docker compose up -d
+# Full guide: docs/SELF_HOSTING.md
+services:
+  rocket-tracker:
+    build: .                      # or an image you pushed to your registry
+    container_name: rocket-tracker
+    restart: unless-stopped
+    environment:
+      RT_PUBLIC_URL: https://rl.example.com
+      RT_OIDC_ISSUER: https://auth.example.com/application/o/rocket-tracker/
+      RT_OIDC_CLIENT_ID: rocket-tracker
+      RT_OIDC_CLIENT_SECRET_FILE: /run/secrets/rt_oidc_secret
+      # RT_OIDC_ALLOWED_GROUPS: rocket-league   # optional: only these Authentik groups may sign in
+      # RT_SESSION_DAYS: "30"
+    secrets:
+      - rt_oidc_secret
+    volumes:
+      - ./data:/data              # SQLite database: back this folder up
+    ports:
+      - "8080:8080"               # or drop this and join your proxy's network
+    # The image runs as uid 65532: `sudo chown 65532:65532 ./data` before the first start.
+
+secrets:
+  rt_oidc_secret:
+    file: ./oidc_client_secret.txt
