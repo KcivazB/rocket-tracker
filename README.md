@@ -15,6 +15,15 @@ et affiche ta progression dans un dashboard local : http://localhost:8765
 > Une mise à jour du jeu peut réinitialiser le fichier ini : le dashboard affiche alors un avertissement,
 > il suffit de relancer `rltracker setup`.
 
+## Le dashboard
+
+- **Tableau de bord** : winrate, progression, analyse mentale, mécanique, arènes, coéquipiers…
+- **Objectif saison** : calendrier des games par jour (objectif réglable, 10 games de 1v1 par défaut),
+  séries, projection. Clique sur un jour pour ajouter des games jouées sans le tracker.
+- **Historique** : tous les matchs jour par jour, avec filtres et recherche par joueur ou arène.
+- **Page match** : score, tableau des scores, chronologie des buts, comparaison à ta moyenne,
+  mouvement et frappes, liens tracker.gg vers les profils des joueurs.
+
 ## Commandes
 
 | Commande | Rôle |

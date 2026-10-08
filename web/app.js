@@ -555,6 +555,211 @@
       .sort(function (a, b) { return b.n - a.n || (b.wr || 0) - (a.wr || 0); });
   }
 
+  /* ---------- routing, history & match page (pure) ---------- */
+  /** Hash route: '#/' dashboard, '#/historique' history, '#/match/<id>' match page (id null when invalid). */
+  function parseRoute(hash) {
+    var h = String(hash || '').replace(/^#\/?/, '').replace(/\/+$/, '');
+    try { h = decodeURIComponent(h); } catch (e) { /* keep raw */ }
+    if (h === 'historique') return { view: 'history', id: null };
+    var r = /^match\/(\d+)$/.exec(h);
+    if (r) return { view: 'match', id: +r[1] };
+    if (/^match(\/|$)/.test(h)) return { view: 'match', id: null };
+    return { view: 'dash', id: null };
+  }
+
+  var DEFAULT_HIST_FILTERS = { mode: 'all', result: 'all', tag: 'all', period: 'all', q: '', includeOffline: true };
+  function tOfM(m) { return m._t != null ? m._t : startMs(m); }
+  function normText(s) {
+    var t = String(s == null ? '' : s).toLowerCase();
+    return t.normalize ? t.normalize('NFD').replace(/[̀-ͯ]/g, '') : t;
+  }
+  function searchTerms(q) { return normText(q).split(/\s+/).filter(Boolean); }
+  /** Searchable text of a match: every player name (me, teammates, opponents) and the arena. */
+  function matchHaystack(m) {
+    var parts = [prettyArena(m.arena), m.arena || ''];
+    if (m.me && m.me.name) parts.push(m.me.name);
+    (m.players || []).forEach(function (p) { if (p && p.name) parts.push(p.name); });
+    return normText(parts.join(' \u0001 '));
+  }
+  function histMinT(f, now) { return f.period && f.period !== 'all' ? now - (+f.period) * DAY_MS : -Infinity; }
+  function histFilters(f) { return Object.assign({}, DEFAULT_HIST_FILTERS, f || {}); }
+
+  /** History filters (independent from the dashboard ones). All terms of the search must match. */
+  function filterHistory(ms, f, now) {
+    f = histFilters(f);
+    now = isNum(now) ? now : Date.now();
+    var minT = histMinT(f, now), terms = searchTerms(f.q);
+    return (ms || []).filter(function (m) {
+      if (!m || typeof m !== 'object') return false;
+      if (f.mode !== 'all' && modeKey(m) !== f.mode) return false;
+      if (f.result !== 'all' && m.result !== f.result) return false;
+      if (f.tag !== 'all' && (m.tag || 'other') !== f.tag) return false;
+      if (!f.includeOffline && m.online === false) return false;
+      if (tOfM(m) < minT) return false;
+      if (terms.length) {
+        var h = matchHaystack(m);
+        for (var i = 0; i < terms.length; i++) if (h.indexOf(terms[i]) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  function manualModeKey(mode) { return (mode === '1v1' || mode === '2v2' || mode === '3v3') ? mode : 'other'; }
+  /** Manual entries shown in the history: they have no result detail, players, arena nor tag,
+   *  so they are hidden as soon as a result, tag or text filter is active. */
+  function filterManualHistory(manual, f, now) {
+    f = histFilters(f);
+    now = isNum(now) ? now : Date.now();
+    if (f.result !== 'all' || f.tag !== 'all' || searchTerms(f.q).length) return [];
+    var minT = histMinT(f, now);
+    return (manual || []).filter(function (e) {
+      var t = e ? parseDay(e.day) : null;
+      if (t == null || !(num(e.games) > 0)) return false;
+      if (f.mode !== 'all' && manualModeKey(e.mode) !== f.mode) return false;
+      return addDays(t, 1) > minT;
+    });
+  }
+
+  /** Groups matches (+ manual entries) by local day, newest day and newest match first.
+   *  Day totals include the manual games (manualGames > 0 tells it); diff = sum of goal_diff of decided matches. */
+  function groupHistory(ms, manual) {
+    var byKey = {};
+    function grp(key) {
+      return byKey[key] || (byKey[key] = { key: key, t: parseDay(key), matches: [], manual: [], games: 0, wins: 0, losses: 0, abandoned: 0, diff: 0, decided: 0, manualGames: 0 });
+    }
+    (ms || []).forEach(function (m) {
+      var d = grp(dayKey(tOfM(m)));
+      d.matches.push(m);
+      d.games++;
+      if (m.result === 'win') d.wins++; else if (m.result === 'loss') d.losses++; else d.abandoned++;
+      if (isDecided(m)) { d.decided++; if (isNum(m.goal_diff)) d.diff += m.goal_diff; }
+    });
+    (manual || []).forEach(function (e) {
+      if (!e || parseDay(e.day) == null) return;
+      var g = Math.round(num(e.games));
+      if (g <= 0) return;
+      var w = Math.min(g, Math.max(0, Math.round(num(e.wins))));
+      var d = grp(e.day);
+      d.manual.push({ day: e.day, mode: e.mode, games: g, wins: w, losses: g - w });
+      d.games += g; d.wins += w; d.losses += g - w; d.manualGames += g;
+    });
+    return Object.keys(byKey).sort().reverse().map(function (k) {
+      var d = byKey[k];
+      d.matches.sort(function (a, b) { return tOfM(b) - tOfM(a) || num(b.id) - num(a.id); });
+      d.manual.sort(function (a, b) { return String(a.mode).localeCompare(String(b.mode)); });
+      return d;
+    });
+  }
+
+  /** First `limit` matches of the grouped list (days cut mid-way when needed). Manual-only days are kept
+   *  while no further match is hidden before them. */
+  function paginateGroups(groups, limit) {
+    var out = [], shown = 0, total = 0;
+    (groups || []).forEach(function (g) { total += g.matches.length; });
+    for (var i = 0; i < (groups || []).length; i++) {
+      var g = groups[i];
+      if (shown >= limit && g.matches.length) break;
+      var take = g.matches.slice(0, Math.max(0, limit - shown));
+      shown += take.length;
+      out.push(Object.assign({}, g, { shownMatches: take, truncated: take.length < g.matches.length }));
+    }
+    return { groups: out, shown: shown, total: total, remaining: total - shown };
+  }
+
+  function summarizeHistory(ms, manual) {
+    var r = wl(ms || []);
+    var mg = 0;
+    (manual || []).forEach(function (e) { mg += Math.max(0, Math.round(num(e && e.games))); });
+    return {
+      n: (ms || []).length, wins: r.wins, losses: r.losses, wr: r.wr,
+      abandoned: (ms || []).filter(function (m) { return m.result === 'abandoned'; }).length,
+      diffAvg: mean((ms || []).filter(isDecided).map(function (m) { return m.goal_diff; })),
+      manualGames: mg
+    };
+  }
+
+  function indexOfId(all, id) {
+    for (var i = 0; i < (all || []).length; i++) if (all[i] && all[i].id === id) return i;
+    return -1;
+  }
+  /** Chronological neighbours across all matches (all = annotate() output). */
+  function matchNeighbors(all, id) {
+    var i = indexOfId(all, id);
+    return { index: i, total: (all || []).length, prev: i > 0 ? all[i - 1] : null, next: i >= 0 && i < all.length - 1 ? all[i + 1] : null };
+  }
+  /** Session position, previous match of the session and win/loss streak right after this match (all modes). */
+  function matchContext(all, id) {
+    var i = indexOfId(all, id);
+    if (i < 0) return null;
+    var m = all[i], n = 0;
+    all.forEach(function (x) { if (x._sess === m._sess) n++; });
+    return {
+      sessIdx: m._sessIdx || 1, sessN: n || 1,
+      prevInSession: (m._sessIdx || 1) > 1 && i > 0 ? all[i - 1] : null,
+      streak: streaks(all.slice(0, i + 1)).current
+    };
+  }
+
+  var PERF_STATS = [
+    { key: 'score', label: 'Score', digits: 0, higherBetter: true },
+    { key: 'goals', label: 'Buts', digits: 0, higherBetter: true },
+    { key: 'assists', label: 'Passes', digits: 0, higherBetter: true },
+    { key: 'saves', label: 'Arrêts', digits: 0, higherBetter: true },
+    { key: 'shots', label: 'Tirs', digits: 0, higherBetter: true },
+    { key: 'touches', label: 'Touches', digits: 0, higherBetter: true },
+    { key: 'demos', label: 'Démolitions', digits: 0, higherBetter: true }
+  ];
+  var MOVE_STATS = [
+    { key: 'avg_speed', label: 'Vitesse moyenne', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
+    { key: 'supersonic_pct', label: 'Supersonique', unit: '%', digits: 1, higherBetter: true },
+    { key: 'avg_boost', label: 'Boost moyen', unit: '', digits: 0, higherBetter: null },
+    { key: 'zero_boost_pct', label: 'À 0 boost', unit: '%', digits: 1, higherBetter: false },
+    { key: 'full_boost_pct', label: 'À 100 boost', unit: '%', digits: 1, higherBetter: null },
+    { key: 'boosting_pct', label: 'Boost actif', unit: '%', digits: 1, higherBetter: null },
+    { key: 'powerslide_pct', label: 'Powerslide', unit: '%', digits: 1, higherBetter: null },
+    { key: 'demolished_s', label: 'Temps démoli', unit: 's', digits: 1, higherBetter: false },
+    { key: 'ground_pct', label: 'Au sol', unit: '%', digits: 1, split: true },
+    { key: 'wall_pct', label: 'Sur les murs', unit: '%', digits: 1, split: true },
+    { key: 'air_pct', label: 'En l’air', unit: '%', digits: 1, split: true }
+  ];
+  var HIT_STATS = [
+    { key: 'count', label: 'Frappes', unit: '', digits: 0, higherBetter: null },
+    { key: 'avg_speed', label: 'Frappe moyenne', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
+    { key: 'max_speed', label: 'Frappe max.', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true }
+  ];
+  /** Value of stat s for match m from source 'me' | 'movement' | 'hits' (converted, null when missing). */
+  function statValue(m, src, s) {
+    var o = m ? m[src] : null;
+    var raw = o ? o[s.key] : null;
+    if (!isNum(raw)) return null;
+    return s.conv ? s.conv(raw) : raw;
+  }
+  /** Averages of my previous (up to maxN) decided matches of the same mode & variant, strictly before match `id`
+   *  in chronological order (all = annotate() output). Each average carries its own sample size n. */
+  function matchBaseline(all, id, maxN) {
+    maxN = maxN || 50;
+    var i = indexOfId(all, id);
+    if (i < 0) return null;
+    var m = all[i], prev = [];
+    var variant = m.variant || 'Soccar';
+    for (var j = i - 1; j >= 0 && prev.length < maxN; j--) {
+      var x = all[j];
+      if (x && isDecided(x) && x.mode === m.mode && (x.variant || 'Soccar') === variant) prev.push(x);
+    }
+    function avgs(src, list) {
+      var o = {};
+      list.forEach(function (s) {
+        var vals = prev.map(function (x) { return statValue(x, src, s); }).filter(isNum);
+        o[s.key] = { avg: mean(vals), n: vals.length };
+      });
+      return o;
+    }
+    return {
+      n: prev.length, mode: m.mode,
+      me: avgs('me', PERF_STATS), movement: avgs('movement', MOVE_STATS), hits: avgs('hits', HIT_STATS)
+    };
+  }
+
   /* ---------- formatting (pure) ---------- */
   var nfCache = {};
   function nf(d) {
@@ -591,7 +796,10 @@
     computeSituations: computeSituations, computeGoalsPerMinute: computeGoalsPerMinute, computeMechanics: computeMechanics,
     computeStatfeed: computeStatfeed, statfeedLabel: statfeedLabel, prettyArena: prettyArena, computeArenas: computeArenas,
     computeTeammates: computeTeammates, computeGoal: computeGoal, trackedByMode: trackedByMode, trackerUrl: trackerUrl, fmtNum: fmtNum, fmtPct: fmtPct, fmtPct100: fmtPct100, fmtSigned: fmtSigned,
-    fmtClock: fmtClock, fmtHours: fmtHours, dayKey: dayKey
+    fmtClock: fmtClock, fmtHours: fmtHours, dayKey: dayKey,
+    parseRoute: parseRoute, DEFAULT_HIST_FILTERS: DEFAULT_HIST_FILTERS, filterHistory: filterHistory, filterManualHistory: filterManualHistory,
+    groupHistory: groupHistory, paginateGroups: paginateGroups, summarizeHistory: summarizeHistory, matchNeighbors: matchNeighbors,
+    matchContext: matchContext, matchBaseline: matchBaseline, statValue: statValue, PERF_STATS: PERF_STATS, MOVE_STATS: MOVE_STATS, HIT_STATS: HIT_STATS
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -631,8 +839,13 @@
     open: {},
     loaded: false,
     config: null,
-    manual: []
+    manual: [],
+    route: parseRoute(location.hash),
+    hist: loadHistFilters(),
+    histShown: 100,
+    histScroll: 0
   };
+  var HIST_PAGE = 100;
   var charts = {};
 
   function loadFilters() {
@@ -644,6 +857,15 @@
     return f;
   }
   function saveFilters() { try { localStorage.setItem('rt.filters', JSON.stringify(state.filters)); } catch (e) { /* ignore */ } }
+  function loadHistFilters() {
+    var f = Object.assign({}, DEFAULT_HIST_FILTERS);
+    try {
+      var s = JSON.parse(localStorage.getItem('rt.history.filters') || 'null');
+      if (s && typeof s === 'object') Object.keys(f).forEach(function (k) { if (s[k] != null && typeof s[k] === typeof f[k]) f[k] = s[k]; });
+    } catch (e) { /* storage unavailable */ }
+    return f;
+  }
+  function saveHistFilters() { try { localStorage.setItem('rt.history.filters', JSON.stringify(state.hist)); } catch (e) { /* ignore */ } }
 
   /* ---------- API (real or mock) ---------- */
   var mock = null, mockReady = null;
@@ -670,7 +892,19 @@
       mock = { matches: [], config: { player_names: ['Virgile'], player_ids: ['Epic|8f3a21c9|0'], default_tag: 'ranked', rl_install_dir: '', dashboard_port: 8765, rl_port: 49123, goal: { mode: '1v1', daily: 10, season_start: '', season_end: '' } }, t0: Date.now() };
       if (MOCK === 'empty') return Promise.resolve();
       var src = params.get('mockdata') || '../devtools/mock/mock-matches.json';
-      return fetch(src, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { mock.matches = d; });
+      return fetch(src, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+        mock.matches = d;
+        // Demo-only seeds: a few hand-entered days and one match tracked from mid-game (partial).
+        if (!d.length || params.get('mockseed') === '0') return;
+        var lastT = Date.parse(d[d.length - 1].started_at);
+        mock.manual = [
+          { day: dayKey(lastT), mode: '1v1', games: 7, wins: 4 },
+          { day: dayKey(addDays(lastT, -2)), mode: '2v2', games: 3, wins: 1 },
+          { day: dayKey(addDays(lastT, -9)), mode: '1v1', games: 5, wins: 3 }
+        ];
+        var p = d.slice().reverse().find(function (m) { return (m.goals || []).length >= 3 && m.result !== 'abandoned'; });
+        if (p && !d.some(function (m) { return m.partial; })) { p.partial = true; p.goals = p.goals.slice(2); }
+      });
     })());
     return ready.then(function () {
       var m;
@@ -1347,7 +1581,7 @@
       if (m.online === false) chips.push('<span class="chip">Hors ligne</span>');
       html += '<tr class="row' + (open ? ' open' : '') + '" data-id="' + m.id + '" tabindex="0" aria-expanded="' + open + '">' +
         '<td><span class="caret">›</span></td>' +
-        '<td class="nowrap">' + esc(fmtDate(m._t, true)) + '</td>' +
+        '<td class="nowrap"><a class="row-link" href="#/match/' + m.id + '" title="Ouvrir la page du match">' + esc(fmtDate(m._t, true)) + '</a></td>' +
         '<td><div>' + esc(m.mode || '—') + (m.variant && m.variant !== 'Soccar' ? ' ' + esc(m.variant) : '') + ' <span class="muted hide-mobile">· ' + esc(prettyArena(m.arena)) + '</span></div>' + (chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '') + '</td>' +
         '<td class="c"><span class="res ' + esc(m.result) + '" title="' + esc(r[1]) + '">' + r[0] + '</span></td>' +
         '<td class="c"><span class="score">' + fmtNum(m.team_score) + '<span class="sep">–</span>' + fmtNum(m.opp_score) + '</span></td>' +
@@ -1368,6 +1602,22 @@
     var t = num(g.t), reg = regulationS(m);
     return isOtGoal(m, g) ? '+' + fmtClock(Math.max(0, t - reg)) : fmtClock(t);
   }
+  function sortedGoals(m) {
+    return (m.goals || []).filter(function (g) { return g && typeof g === 'object'; }).slice().sort(function (a, b) { return num(a.t) - num(b.t); });
+  }
+  /** Goal timeline: our goals above the axis, theirs below, overtime shaded. */
+  function goalTimeline(m, goals) {
+    var reg = regulationS(m);
+    var total = Math.max(reg, reg + num(m.overtime_s), goals.length ? num(goals[goals.length - 1].t) : 0);
+    var tl = '<div class="timeline" aria-hidden="true"><div class="axis"></div>';
+    if (m.overtime) tl += '<div class="ot-zone" style="left:' + (reg / total * 100).toFixed(2) + '%;right:0"></div>';
+    for (var mi = 0; mi * 60 <= reg; mi++) tl += '<span class="tick" style="left:' + (mi * 60 / total * 100).toFixed(2) + '%">' + mi + '′</span>';
+    if (m.overtime && total > reg + 30) tl += '<span class="tick" style="left:' + ((reg + (total - reg) / 2) / total * 100).toFixed(2) + '%">Prol.</span>';
+    goals.forEach(function (g) {
+      tl += '<span class="g ' + (g.team === 'us' ? 'us' : 'them') + (g.me_scored ? ' me' : '') + '" style="left:' + (Math.min(1, num(g.t) / total) * 100).toFixed(2) + '%" title="' + esc(goalTime(m, g) + ' · ' + (g.scorer || '?')) + '"></span>';
+    });
+    return tl + '</div>';
+  }
   function matchDetail(m) {
     var players = (m.players || []).slice();
     var ours = players.filter(function (p) { return p.team === m.my_team; }).sort(function (a, b) { return num(b.score) - num(a.score); });
@@ -1380,23 +1630,14 @@
       '<tr class="team-row"><td colspan="7"><span class="team-dot" style="background:var(--them)"></span>Adversaires · ' + fmtNum(m.opp_score) + '</td></tr>' + theirs.map(prow).join('') +
       '</tbody></table>';
 
-    var goals = (m.goals || []).slice().sort(function (a, b) { return num(a.t) - num(b.t); });
-    var reg = regulationS(m);
-    var total = Math.max(reg, reg + num(m.overtime_s), goals.length ? num(goals[goals.length - 1].t) : 0);
-    var tl = '<div class="timeline" aria-hidden="true"><div class="axis"></div>';
-    if (m.overtime) tl += '<div class="ot-zone" style="left:' + (reg / total * 100).toFixed(2) + '%;right:0"></div>';
-    for (var mi = 0; mi * 60 <= reg; mi++) tl += '<span class="tick" style="left:' + (mi * 60 / total * 100).toFixed(2) + '%">' + mi + '′</span>';
-    if (m.overtime && total > reg + 30) tl += '<span class="tick" style="left:' + ((reg + (total - reg) / 2) / total * 100).toFixed(2) + '%">Prol.</span>';
-    goals.forEach(function (g) {
-      tl += '<span class="g ' + (g.team === 'us' ? 'us' : 'them') + (g.me_scored ? ' me' : '') + '" style="left:' + (Math.min(1, num(g.t) / total) * 100).toFixed(2) + '%" title="' + esc(goalTime(m, g) + ' · ' + (g.scorer || '?')) + '"></span>';
-    });
-    tl += '</div>';
+    var goals = sortedGoals(m);
+    var tl = goalTimeline(m, goals);
     var us = 0, them = 0;
     var gl = goals.length ? '<ul class="goal-list">' + goals.map(function (g) {
       if (g.team === 'us') us++; else them++;
       return '<li><span class="t">' + goalTime(m, g) + '</span><span class="d" style="background:' + (g.team === 'us' ? 'var(--us)' : 'var(--them)') + '"></span>' +
         '<span class="who">' + esc(g.scorer || '?') + (g.me_scored ? ' <span class="chip">vous</span>' : '') + (g.assister ? ' <small>· passe ' + esc(g.assister) + '</small>' : '') +
-        (isNum(g.speed) && g.speed > 0 ? ' <small>· ' + fmtNum(kmh(g.speed)) + ' km/h</small>' : '') + '</span>' +
+        (isNum(g.speed) && g.speed > 0 ? ' <small>· ' + fmtNum(goalKmh(g.speed)) + ' km/h</small>' : '') + '</span>' +
         '<span class="sc">' + us + '–' + them + '</span></li>';
     }).join('') + '</ul>' : '<p class="muted small">' + (goalsComplete(m) ? 'Aucun but dans ce match.' : 'Aucun but enregistré.') + '</p>';
     if (!goalsComplete(m)) gl += '<p class="muted small">Suivi démarré en cours de match : chronologie incomplète (' + goals.length + ' but' + (goals.length > 1 ? 's' : '') + ' sur ' + (num(m.team_score) + num(m.opp_score)) + ').</p>';
@@ -1419,7 +1660,393 @@
       '<div><h4>Chronologie des buts</h4>' + tl + gl + '</div></div>' +
       '<div class="detail-facts">' + facts.join('') + '</div>' +
       (feed ? '<h4>Fil de stats</h4><div class="chips">' + feed + '</div>' : '') +
+      '<div class="detail-actions"><a class="btn btn-ghost" href="#/match/' + m.id + '">Voir le match <span aria-hidden="true">→</span></a></div>' +
       '<div class="detail-actions only-mobile"><label class="small muted">Type&nbsp;<select class="select tag-select" data-tag-for="' + m.id + '" aria-label="Type de match">' + tagOptions(m.tag) + '</select></label></div>';
+  }
+
+  /* ---------- routing ---------- */
+  function syncNav() {
+    var cur = state.route.view === 'dash' ? 'dash' : 'history';
+    $$('[data-nav]').forEach(function (a) {
+      if (a.getAttribute('data-nav') === cur) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+    if (state.route.view === 'dash') document.title = 'Rocket Tracker';
+    else if (state.route.view === 'history') document.title = 'Historique · Rocket Tracker';
+  }
+  function onRoute() {
+    var r = parseRoute(location.hash);
+    var prev = state.route;
+    if (r.view === prev.view && r.id === prev.id) return;
+    if (prev.view === 'history') state.histScroll = window.scrollY || window.pageYOffset || 0;
+    state.route = r;
+    renderAll();
+    window.scrollTo(0, r.view === 'history' && prev.view === 'match' ? state.histScroll : 0);
+    var h = r.view === 'history' ? $('#h-history') : r.view === 'match' ? $('#mp-title') : null;
+    if (h) h.focus({ preventScroll: true });
+  }
+
+  /* ---------- shared match bits ---------- */
+  var RES_LABEL = { win: ['V', 'Victoire'], loss: ['D', 'Défaite'], abandoned: ['Abandon', 'Abandonné'] };
+  var PARTIAL_TIP = 'Suivi démarré en cours de match : stats et chronologie des buts incomplètes';
+  function resBadge(m) {
+    var r = RES_LABEL[m.result] || ['?', 'Résultat inconnu'];
+    return '<span class="res ' + esc(m.result || '') + '" aria-hidden="true">' + r[0] + '</span><span class="sr-only">' + r[1] + '</span>';
+  }
+  function longDay(t) {
+    var s = new Date(t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  function fmtTime(t) { return new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
+  function modeLabel(m) { return (m.mode || '—') + (m.variant && m.variant !== 'Soccar' ? ' ' + m.variant : ''); }
+  function signCls(x) { return isNum(x) && x > 0 ? 'pos' : isNum(x) && x < 0 ? 'neg' : ''; }
+  function matchBadges(m, long) {
+    var b = [];
+    if (m.mvp) b.push('<span class="chip mvp" title="Meilleur joueur du match">MVP</span>');
+    if (m.overtime) b.push('<span class="chip" title="Prolongation' + (isNum(m.overtime_s) && m.overtime_s > 0 ? ' : ' + fmtClock(m.overtime_s) : '') + '">' + (long ? 'Prolongation' : 'Prol.') + '</span>');
+    if (m.forfeit) {
+      b.push(m.result === 'win' ? '<span class="chip" title="Victoire par forfait de l’équipe adverse">Forfait adv.</span>'
+        : '<span class="chip" title="Défaite par forfait de votre équipe">Forfait</span>');
+    }
+    if (m.partial) b.push('<span class="chip warn" title="' + esc(PARTIAL_TIP) + '">Partiel</span>');
+    if (m.online === false) b.push('<span class="chip" title="Match hors ligne (bots, local)">Hors ligne</span>');
+    return b.join('');
+  }
+  function tagFilterOptions() {
+    var tags = TAGS.slice();
+    state.all.forEach(function (m) { if (m.tag && tags.indexOf(m.tag) < 0) tags.push(m.tag); });
+    return '<option value="all">Tous</option>' + tags.map(function (t) { return '<option value="' + esc(t) + '">' + esc(TAG_LABELS[t] || t) + '</option>'; }).join('');
+  }
+  var DOT_SEP = '<span class="dot-sep" aria-hidden="true">·</span>';
+
+  /* ---------- history view ---------- */
+  function syncHistUi() {
+    var f = state.hist;
+    [['#h-mode', 'mode'], ['#h-result', 'result'], ['#h-period', 'period']].forEach(function (x) {
+      $$(x[0] + ' button').forEach(function (b) { b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(b.dataset.v === String(f[x[1]]))); });
+    });
+    var tagSel = $('#h-tag');
+    tagSel.innerHTML = tagFilterOptions();
+    tagSel.value = f.tag;
+    if (tagSel.value !== f.tag) { f.tag = 'all'; tagSel.value = 'all'; }
+    var q = $('#h-q');
+    if (document.activeElement !== q && q.value !== f.q) q.value = f.q;
+    $('#h-offline').checked = !!f.includeOffline;
+  }
+
+  function histRow(m) {
+    var mm = m.me || {};
+    var diff = isNum(m.goal_diff) ? m.goal_diff : (isNum(m.team_score) && isNum(m.opp_score) ? m.team_score - m.opp_score : null);
+    var badges = matchBadges(m, false);
+    return '<li><a class="hrow" href="#/match/' + m.id + '">' +
+      '<span class="h-time num">' + esc(fmtTime(m._t)) + '</span>' +
+      '<span class="h-mode">' + esc(modeLabel(m)) + '</span>' +
+      '<span class="h-res">' + resBadge(m) + '</span>' +
+      '<span class="h-score"><span class="score">' + fmtNum(m.team_score) + '<span class="sep">–</span>' + fmtNum(m.opp_score) + '</span>' +
+        (diff != null ? ' <span class="h-diff ' + signCls(diff) + '">' + fmtSigned(diff) + '</span>' : '') + '</span>' +
+      '<span class="h-arena"><span class="h-arena-name">' + esc(prettyArena(m.arena)) + '</span>' + (badges ? '<span class="chips">' + badges + '</span>' : '') + '</span>' +
+      '<span class="h-stats num" title="Buts / Passes / Arrêts / Tirs">' + fmtNum(mm.goals) + ' / ' + fmtNum(mm.assists) + ' / ' + fmtNum(mm.saves) + ' / ' + fmtNum(mm.shots) + '</span>' +
+      '<span class="h-pts num">' + fmtNum(mm.score) + '<small> pts</small></span>' +
+      '<span class="h-dur num" title="Durée">' + fmtClock(m.duration_s) + '</span>' +
+      '<span class="h-go" aria-hidden="true">›</span></a></li>';
+  }
+  function manualRow(e) {
+    return '<li class="hist-manual"><span class="hm-icon" aria-hidden="true">✎</span><span>Saisie manuelle' + DOT_SEP + plural(e.games, 'game') + ' ' + esc(e.mode) + DOT_SEP +
+      e.wins + ' V – ' + e.losses + ' D</span></li>';
+  }
+  function histDay(g) {
+    var head = longDay(g.t);
+    var tot = [plural(g.games, 'match'), g.wins + ' V – ' + g.losses + ' D'];
+    if (g.abandoned) tot.push(plural(g.abandoned, 'abandon'));
+    if (g.decided) tot.push('diff. <b class="' + signCls(g.diff) + '">' + fmtSigned(g.diff) + '</b>');
+    var note = g.manualGames ? ' <span class="chip manual" title="Les totaux du jour incluent ' + plural(g.manualGames, 'game') + ' saisie' + (g.manualGames > 1 ? 's' : '') + ' à la main">✎ dont ' + g.manualGames + ' saisie' + (g.manualGames > 1 ? 's' : '') + '</span>' : '';
+    var rows = g.shownMatches.map(histRow).join('') + (g.truncated ? '<li class="hist-trunc">Suite de la journée avec « Afficher plus »</li>' : g.manual.map(manualRow).join(''));
+    return '<section class="card hist-day" aria-label="' + esc(head) + '"><header class="hist-day-head"><h2>' + esc(head) + '</h2>' +
+      '<p class="hist-day-tot">' + tot.join(DOT_SEP) + note + '</p></header><ul class="hist-rows">' + rows + '</ul></section>';
+  }
+  function renderHistory() {
+    syncHistUi();
+    var f = state.hist, box = $('#hist-list'), more = $('#hist-more'), sum = $('#hist-summary');
+    if (!state.loaded) { sum.textContent = ''; more.hidden = true; box.innerHTML = '<div class="hist-empty muted">Chargement…</div>'; return; }
+    var ms = filterHistory(state.all, f);
+    var man = filterManualHistory(state.manual, f);
+    var groups = groupHistory(ms, man);
+    var page = paginateGroups(groups, state.histShown);
+    var s = summarizeHistory(ms, man);
+    var parts = [];
+    if (s.n) {
+      parts.push('<b>' + fmtNum(s.n) + '</b> match' + (s.n > 1 ? 's' : ''));
+      parts.push('<b>' + s.wins + '</b> V – <b>' + s.losses + '</b> D' + (s.abandoned ? ' <span class="muted">(+ ' + plural(s.abandoned, 'abandon') + ')</span>' : ''));
+      parts.push('<b>' + fmtPct(s.wr) + '</b> de victoire');
+      parts.push('diff. moyenne <b class="' + signCls(s.diffAvg) + '">' + fmtSigned(s.diffAvg, 2) + '</b>');
+    } else parts.push('Aucun match suivi');
+    if (s.manualGames) parts.push('<span class="muted">+ ' + plural(s.manualGames, 'game') + ' saisie' + (s.manualGames > 1 ? 's' : '') + ' à la main</span>');
+    sum.innerHTML = parts.join(DOT_SEP);
+    if (!groups.length) {
+      more.hidden = true;
+      box.innerHTML = !state.all.length && !state.manual.length
+        ? '<div class="no-results"><p><strong>Aucun match enregistré pour l’instant.</strong></p><p class="muted">Jouez une partie : elle apparaîtra ici automatiquement.</p></div>'
+        : '<div class="no-results"><p><strong>Aucun match ne correspond à ces filtres.</strong></p><p class="muted">Élargissez la période ou modifiez la recherche.</p>' +
+          '<p><button type="button" class="btn" data-hist-reset>Réinitialiser les filtres</button></p></div>';
+      return;
+    }
+    box.innerHTML = '<div class="hist-cols" aria-hidden="true"><span>Heure</span><span>Mode</span><span>Rés.</span><span>Score</span><span>Arène</span>' +
+      '<span class="r">B / P / A / Tirs</span><span class="r">Points</span><span class="r">Durée</span><span></span></div>' + page.groups.map(histDay).join('');
+    more.hidden = page.remaining <= 0;
+    more.textContent = 'Afficher plus (' + plural(page.remaining, 'match') + ' restant' + (page.remaining > 1 ? 's' : '') + ')';
+  }
+  function onHistChanged() { saveHistFilters(); state.histShown = HIST_PAGE; renderHistory(); }
+  function bindHistory() {
+    function seg(id, key) {
+      $(id).addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-v]');
+        if (!b) return;
+        state.hist[key] = b.dataset.v;
+        onHistChanged();
+      });
+    }
+    seg('#h-mode', 'mode');
+    seg('#h-result', 'result');
+    seg('#h-period', 'period');
+    $('#h-tag').addEventListener('change', function (e) { state.hist.tag = e.target.value; onHistChanged(); });
+    $('#h-offline').addEventListener('change', function (e) { state.hist.includeOffline = e.target.checked; onHistChanged(); });
+    var qTimer = null;
+    $('#h-q').addEventListener('input', function (e) {
+      var v = e.target.value;
+      clearTimeout(qTimer);
+      qTimer = setTimeout(function () { state.hist.q = v; onHistChanged(); }, 160);
+    });
+    $('#hist-more').addEventListener('click', function () { state.histShown += HIST_PAGE; renderHistory(); });
+    $('#view-history').addEventListener('click', function (e) {
+      if (!e.target.closest('[data-hist-reset]')) return;
+      state.hist = Object.assign({}, DEFAULT_HIST_FILTERS);
+      $('#h-q').value = '';
+      onHistChanged();
+    });
+  }
+
+  /* ---------- match page ---------- */
+  function navLink(t, label, rel, key) {
+    if (!t) return '<span class="btn btn-ghost" aria-disabled="true">' + label + '</span>';
+    var tip = fmtDate(t._t, true) + ' · ' + modeLabel(t) + ' · ' + num(t.team_score) + '–' + num(t.opp_score) + ' (touche ' + key + ')';
+    return '<a class="btn btn-ghost" href="#/match/' + t.id + '" rel="' + rel + '" title="' + esc(tip) + '">' + label + '</a>';
+  }
+  function mpNav(nb) {
+    return '<nav class="mp-nav" aria-label="Navigation entre les matchs">' +
+      '<a class="btn btn-ghost" href="#/historique"><span aria-hidden="true">←</span> Historique</a>' +
+      '<div class="mp-pn">' + navLink(nb.prev, '<span aria-hidden="true">‹</span> Précédent', 'prev', '←') +
+      '<span class="mp-pos num" title="Position chronologique parmi tous vos matchs">' + fmtNum(nb.index + 1) + ' / ' + fmtNum(nb.total) + '</span>' +
+      navLink(nb.next, 'Suivant <span aria-hidden="true">›</span>', 'next', '→') + '</div></nav>';
+  }
+  function mpHero(m, ctx) {
+    var cls = m.result === 'win' || m.result === 'loss' || m.result === 'abandoned' ? m.result : '';
+    var resTxt = m.result === 'win' ? (m.forfeit ? 'Victoire par forfait' : 'Victoire') : m.result === 'loss' ? (m.forfeit ? 'Défaite par forfait' : 'Défaite')
+      : m.result === 'abandoned' ? 'Match abandonné' : 'Résultat inconnu';
+    var dur = 'Durée <b>' + fmtClock(m.duration_s) + '</b>' + (m.overtime ? ' dont <b>' + fmtClock(m.overtime_s) + '</b> de prolongation' : '');
+    var facts = [esc(m.mode || '—'), esc(m.variant || 'Soccar'), esc(prettyArena(m.arena)), m.online === false ? 'Hors ligne' : 'En ligne', dur];
+    var ts = fmtNum(m.team_score), os = fmtNum(m.opp_score);
+    var badges = matchBadges(m, true);
+    var ctxParts = [];
+    if (ctx) {
+      ctxParts.push('Match <b>n°' + ctx.sessIdx + '</b> de la session (' + plural(ctx.sessN, 'match') + ')');
+      var p = ctx.prevInSession;
+      if (p) {
+        var pr = RES_LABEL[p.result] ? RES_LABEL[p.result][1] : 'Résultat inconnu';
+        ctxParts.push('Match précédent : <a href="#/match/' + p.id + '">' + esc(pr) + ' ' + fmtNum(p.team_score) + '–' + fmtNum(p.opp_score) + '</a> <span class="muted">(' + esc(modeLabel(p)) + ')</span>');
+      } else ctxParts.push('Premier match de la session');
+      if (ctx.streak) {
+        var w = ctx.streak.type === 'win', n = ctx.streak.len;
+        ctxParts.push((m.result === 'win' || m.result === 'loss' ? 'Série après ce match' : 'Série en cours à ce moment') + ' : <b class="' + (w ? 'pos' : 'neg') + '">' + n + ' ' + (w ? 'victoire' : 'défaite') + (n > 1 ? 's' : '') + '</b>' + (n > 1 ? ' d’affilée' : ''));
+      }
+    }
+    return '<section class="card mp-hero" aria-labelledby="mp-title">' +
+      '<div class="mp-meta"><h1 id="mp-title" tabindex="-1">' + esc(longDay(m._t)) + ' · ' + esc(fmtTime(m._t)) + '</h1>' +
+        '<p class="mp-facts">' + facts.join(DOT_SEP) + '</p></div>' +
+      '<div class="mp-center">' +
+        '<div class="mp-score" role="img" aria-label="' + esc('Score : votre équipe ' + ts + ', adversaires ' + os) + '">' +
+          '<div class="mp-team us"><span class="mp-n">' + ts + '</span><span class="mp-tl">Votre équipe</span></div>' +
+          '<span class="mp-sep" aria-hidden="true">–</span>' +
+          '<div class="mp-team them"><span class="mp-n">' + os + '</span><span class="mp-tl">Adversaires</span></div></div>' +
+        '<div class="mp-res ' + cls + '">' + resTxt + '</div>' +
+        (badges ? '<div class="chips">' + badges + '</div>' : '') +
+      '</div>' +
+      '<div class="mp-side"><label class="mp-tag"><span>Type</span><select class="select tag-select" data-tag-for="' + m.id + '" aria-label="Type de match">' + tagOptions(m.tag) + '</select></label>' +
+        '<button type="button" class="btn btn-ghost btn-danger" data-mp-del="' + m.id + '">' + TRASH + 'Supprimer</button></div>' +
+      (m.partial ? '<p class="mp-note">' + esc(PARTIAL_TIP) + '.</p>' : '') +
+      (ctxParts.length ? '<div class="mp-context">' + ctxParts.map(function (x) { return '<span>' + x + '</span>'; }).join('') + '</div>' : '') +
+      '</section>';
+  }
+
+  var SB_COLS = [['score', 'Score'], ['goals', 'Buts'], ['assists', 'Passes'], ['saves', 'Arrêts'], ['shots', 'Tirs'], ['touches', 'Touches'], ['demos', 'Démos']];
+  function mpScoreboard(m) {
+    var players = (m.players || []).filter(function (p) { return p && typeof p === 'object'; });
+    if (!players.length && m.me && m.me.name) players = [Object.assign({ team: m.my_team, is_me: true }, m.me)];
+    function team(us) {
+      var list = players.filter(function (p) { return us ? p.team === m.my_team : p.team !== m.my_team; })
+        .sort(function (a, b) { return num(b.score) - num(a.score); });
+      var html = '<tbody><tr class="team-row"><th colspan="' + (SB_COLS.length + 1) + '" scope="colgroup"><span class="team-dot" style="background:var(--' + (us ? 'us' : 'them') + ')"></span>' +
+        (us ? 'Votre équipe' : 'Adversaires') + ' · ' + fmtNum(us ? m.team_score : m.opp_score) + '</th></tr>';
+      if (!list.length) return html + '<tr><td class="muted" colspan="' + (SB_COLS.length + 1) + '">Joueurs inconnus</td></tr></tbody>';
+      html += list.map(function (p) {
+        return '<tr' + (p.is_me ? ' class="me"' : '') + '><th scope="row">' + playerName(p.name, p.primary_id) + (p.is_me ? ' <span class="chip you">vous</span>' : '') + '</th>' +
+          SB_COLS.map(function (c) { return '<td>' + fmtNum(p[c[0]]) + '</td>'; }).join('') + '</tr>';
+      }).join('');
+      html += '<tr class="tot"><th scope="row">Total</th>' + SB_COLS.map(function (c) {
+        var vals = list.map(function (p) { return p[c[0]]; }).filter(isNum);
+        return '<td>' + (vals.length ? fmtNum(vals.reduce(function (a, b) { return a + b; }, 0)) : '—') + '</td>';
+      }).join('') + '</tr></tbody>';
+      return html;
+    }
+    return '<section class="card mp-card mp-span" aria-labelledby="mp-h-sb"><div class="mp-head"><h2 id="mp-h-sb">Tableau des scores</h2>' +
+      '<span class="card-meta">Cliquez sur un pseudo pour son profil tracker.gg</span></div>' +
+      '<div class="table-scroll"><table class="mp-sb"><thead><tr><th scope="col">Joueur</th>' + SB_COLS.map(function (c) { return '<th scope="col">' + c[1] + '</th>'; }).join('') + '</tr></thead>' +
+      team(true) + team(false) + '</table></div></section>';
+  }
+
+  function mpGoals(m) {
+    var goals = sortedGoals(m);
+    var complete = goalsComplete(m);
+    var expected = num(m.team_score) + num(m.opp_score);
+    var us = 0, them = 0;
+    var list = goals.length ? '<ol class="goal-list mp-goal-list">' + goals.map(function (g) {
+      var ours = g.team === 'us';
+      if (ours) us++; else them++;
+      var spd = isNum(g.speed) && g.speed > 0 ? fmtNum(goalKmh(g.speed)) + ' km/h' : '';
+      return '<li><span class="t num">' + goalTime(m, g) + '</span><span class="d" style="background:var(--' + (ours ? 'us' : 'them') + ')"></span>' +
+        '<span class="sr-only">' + (ours ? 'Votre équipe' : 'Adversaires') + '</span>' +
+        '<span class="who"><b>' + esc(g.scorer || '?') + '</b>' + (g.me_scored ? ' <span class="chip you">vous</span>' : '') +
+        (g.assister ? ' <small>· passe ' + esc(g.assister) + (g.me_assist ? ' <span class="chip you">vous</span>' : '') + '</small>' : '') + '</span>' +
+        '<span class="spd num">' + spd + '</span>' +
+        (complete ? '<span class="sc num" title="Score après ce but">' + us + '–' + them + '</span>' : '') + '</li>';
+    }).join('') + '</ol>' : '<p class="muted small">' + (complete ? 'Aucun but dans ce match.' : 'Aucun but enregistré.') + '</p>';
+    var note = complete ? '' : '<p class="mp-note">Liste incomplète : ' + plural(goals.length, 'but') + ' enregistré' + (goals.length > 1 ? 's' : '') + ' sur ' + expected +
+      ' (suivi démarré en cours de match). Le score cumulé n’est pas affiché.</p>';
+    return '<section class="card mp-card" aria-labelledby="mp-h-goals"><div class="mp-head"><h2 id="mp-h-goals">Buts</h2>' +
+      '<span class="legend"><span><i style="background:var(--us)"></i>Votre équipe</span><span><i style="background:var(--them)"></i>Adversaires</span><span><i class="ring"></i>vous</span></span></div>' +
+      goalTimeline(m, goals) + list + note + '</section>';
+  }
+
+  function cmpUnit(s) { return s.unit === '%' ? ' %' : s.unit ? ' ' + s.unit : ''; }
+  /** One "this match vs average" row: value, average, signed delta (arrow + sign, colored when good/bad), bar + average tick. */
+  function cmpRow(s, v, a) {
+    var ad = s.avgDigits != null ? s.avgDigits : s.digits;
+    var fv = function (x, d) { return isNum(x) ? fmtNum(x, d) + cmpUnit(s) : '—'; };
+    var d = isNum(v) && isNum(a) ? v - a : null;
+    var flat = d != null && Math.abs(d) < 0.5 * Math.pow(10, -ad);
+    var good = d == null || flat || s.higherBetter == null ? null : (d > 0) === s.higherBetter;
+    var cls = d == null ? '' : flat ? 'flat' : good == null ? 'neutral' : good ? 'up' : 'down';
+    var txt = d == null ? '—' : flat ? '= moy.' : (d > 0 ? '↑ ' : '↓ ') + fmtSigned(d, ad) + (s.unit === '%' ? ' pt' : cmpUnit(s));
+    var max = Math.max(isNum(v) ? v : 0, isNum(a) ? a : 0) * 1.15;
+    var bar = '';
+    if (max > 0) {
+      bar = '<span class="cmp" aria-hidden="true" title="' + esc('Ce match : ' + fv(v, s.digits) + ' · moyenne : ' + fv(a, ad)) + '">' +
+        (isNum(v) ? '<span class="cmp-fill" style="width:' + (v / max * 100).toFixed(1) + '%"></span>' : '') +
+        (isNum(a) ? '<span class="cmp-avg" style="left:' + (a / max * 100).toFixed(1) + '%"></span>' : '') + '</span>';
+    }
+    return '<tr><th scope="row">' + esc(s.label) + '</th><td class="v">' + fv(v, s.digits) + '</td><td class="a">' + fv(a, ad) + '</td>' +
+      '<td class="dl ' + cls + '">' + txt + '</td><td class="b">' + bar + '</td></tr>';
+  }
+  function cmpTable(rows) {
+    return '<div class="table-scroll"><table class="cmp-table"><thead><tr><th scope="col"><span class="sr-only">Statistique</span></th><th scope="col">Ce match</th><th scope="col">Moyenne</th>' +
+      '<th scope="col">Écart</th><th scope="col" class="b"><span class="legend"><span><i style="background:var(--us)"></i>ce match</span><span><i class="tick"></i>moyenne</span></span></th></tr></thead><tbody>' +
+      rows.join('') + '</tbody></table></div>';
+  }
+  function mpPerf(m, base) {
+    var head = '<div class="mp-head"><h2 id="mp-h-perf">Votre performance vs votre moyenne</h2>';
+    var open = '<section class="card mp-card" aria-labelledby="mp-h-perf">';
+    if (!base || base.n < 3) {
+      return open + head + '</div><p class="muted small">Pas assez de matchs ' + esc(modeLabel(m)) + ' terminés avant celui-ci pour comparer (' + (base ? base.n : 0) + ' sur 3 minimum).</p></section>';
+    }
+    var perf = PERF_STATS.map(function (s) {
+      return cmpRow(Object.assign({ avgDigits: s.key === 'score' ? 0 : 1 }, s), statValue(m, 'me', s), base.me[s.key].avg);
+    });
+    return open + head + '<span class="card-meta">Moyenne de vos ' + base.n + ' derniers matchs ' + esc(modeLabel(m)) + ' terminés avant celui-ci</span></div>' +
+      cmpTable(perf) + '</section>';
+  }
+  function splitRow(label, g, w, a) {
+    var vals = [g, w, a], tot = vals.reduce(function (s, x) { return s + (isNum(x) ? x : 0); }, 0);
+    if (!(tot > 0)) return '';
+    var names = ['Au sol', 'Sur les murs', 'En l’air'];
+    return '<div class="mp-split-row"><span class="lbl">' + label + '</span><div class="split-bar">' + vals.map(function (v, i) {
+      return '<span style="width:' + ((isNum(v) ? v : 0) / tot * 100).toFixed(2) + '%;background:' + T.series[i] + '" title="' + esc(names[i] + ' : ' + fmtPct100(v, 1)) + '"></span>';
+    }).join('') + '</div><span class="vals num">' + vals.map(function (v) { return fmtNum(v, 0); }).join(' / ') + ' %</span></div>';
+  }
+  function mpMovement(m, base) {
+    var mv = m.movement, h = m.hits;
+    if (!mv && !h) return '';
+    var bm = base ? base.movement : {}, bh = base ? base.hits : {};
+    function avgOf(o, k) { return o && o[k] && o[k].n >= 3 ? o[k].avg : null; }
+    var nMv = bm && bm.avg_speed ? bm.avg_speed.n : 0, nH = bh && bh.avg_speed ? bh.avg_speed.n : 0;
+    var nRef = Math.max(nMv, nH);
+    var sub = nRef >= 3 ? 'Comparé à vos ' + nRef + ' derniers matchs ' + esc(modeLabel(m)) + ' avec données' : 'Pas assez de matchs précédents avec données pour comparer';
+    var html = '<section class="card mp-card" aria-labelledby="mp-h-mv"><div class="mp-head"><h2 id="mp-h-mv">Mouvement &amp; frappes</h2><span class="card-meta">' + sub + '</span></div>';
+    if (mv) {
+      var rowThis = splitRow('Ce match', mv.ground_pct, mv.wall_pct, mv.air_pct);
+      var rowAvg = avgOf(bm, 'ground_pct') != null ? splitRow('Moyenne', bm.ground_pct.avg, bm.wall_pct.avg, bm.air_pct.avg) : '';
+      if (rowThis) {
+        html += '<div class="mp-split"><div class="mp-split-head"><span class="card-title">Répartition du temps</span><span class="legend">' +
+          ['Au sol', 'Sur les murs', 'En l’air'].map(function (l, i) { return '<span><i style="background:' + T.series[i] + '"></i>' + l + '</span>'; }).join('') + '</span></div>' +
+          rowThis + rowAvg + '</div>';
+      }
+    }
+    var rows = [];
+    if (mv) MOVE_STATS.forEach(function (s) { if (!s.split) rows.push(cmpRow(s, statValue(m, 'movement', s), avgOf(bm, s.key))); });
+    if (h) {
+      if (rows.length) rows.push('<tr class="sub"><th colspan="5" scope="rowgroup">Frappes de balle</th></tr>');
+      HIT_STATS.forEach(function (s) { rows.push(cmpRow(s, statValue(m, 'hits', s), avgOf(bh, s.key))); });
+    }
+    return html + cmpTable(rows) + '</section>';
+  }
+  function mpFeed(m) {
+    var sf = m.statfeed || {};
+    var rows = Object.keys(sf).filter(function (k) { return k !== 'Win' && isNum(sf[k]) && sf[k] > 0; })
+      .map(function (k) { return { key: k, label: statfeedLabel(k), n: sf[k] }; })
+      .sort(function (a, b) { return b.n - a.n || a.label.localeCompare(b.label); });
+    if (!rows.length) return '';
+    return '<section class="card mp-card" aria-labelledby="mp-h-feed"><div class="mp-head"><h2 id="mp-h-feed">Fil de stats</h2><span class="card-meta">Vos événements dans ce match</span></div>' +
+      '<ul class="mp-feed">' + rows.map(function (r) {
+        return '<li' + (r.label !== r.key ? ' title="' + esc('Événement : ' + r.key) + '"' : '') + '><span>' + esc(r.label) + '</span><b class="num">×' + r.n + '</b></li>';
+      }).join('') + '</ul></section>';
+  }
+  function renderMatchPage() {
+    var box = $('#view-match');
+    var id = state.route.id;
+    if (!state.loaded) { box.innerHTML = '<div class="card mp-missing"><p class="muted">Chargement du match…</p></div>'; return; }
+    var m = id != null ? findMatch(id) : null;
+    if (!m) {
+      document.title = 'Match introuvable · Rocket Tracker';
+      box.innerHTML = '<div class="card mp-missing"><h1 id="mp-title" tabindex="-1">Match introuvable</h1>' +
+        '<p class="muted">Ce match n’existe pas ou a été supprimé' + (id != null ? ' (n°' + id + ')' : '') + '.</p>' +
+        '<p><a class="btn" href="#/historique"><span aria-hidden="true">←</span> Retour à l’historique</a></p></div>';
+      return;
+    }
+    document.title = 'Match du ' + fmtDate(m._t, true) + ' · Rocket Tracker';
+    var nb = matchNeighbors(state.all, m.id), ctx = matchContext(state.all, m.id), base = matchBaseline(state.all, m.id, 50);
+    // Two independent columns (no holes when card heights differ); they stack on narrow screens.
+    var right = mpMovement(m, base) + mpFeed(m);
+    var left = mpGoals(m) + (right ? mpPerf(m, base) : '');
+    if (!right) right = mpPerf(m, base);
+    box.innerHTML = mpNav(nb) + mpHero(m, ctx) + mpScoreboard(m) + '<div class="mp-grid"><div class="mp-col">' + left + '</div><div class="mp-col">' + right + '</div></div>';
+  }
+  function bindMatchView() {
+    var v = $('#view-match');
+    v.addEventListener('change', function (e) {
+      var sel = e.target.closest('[data-tag-for]');
+      if (sel) updateTag(+sel.dataset.tagFor, sel.value, sel);
+    });
+    v.addEventListener('click', function (e) {
+      var d = e.target.closest('[data-mp-del]');
+      if (d) deleteMatch(+d.getAttribute('data-mp-del'), function () { location.hash = '#/historique'; });
+    });
+    document.addEventListener('keydown', function (e) {
+      if (state.route.view !== 'match' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      var t = e.target;
+      if (t && t.closest && t.closest('input, select, textarea, [contenteditable], .table-scroll')) return;
+      if (document.querySelector('dialog[open]')) return;
+      var nb = matchNeighbors(state.all, state.route.id);
+      var to = e.key === 'ArrowLeft' ? nb.prev : nb.next;
+      if (to) { e.preventDefault(); location.hash = '#/match/' + to.id; }
+    });
   }
 
   /* ---------- live banner & warnings ---------- */
@@ -1507,6 +2134,16 @@
   function renderAll() {
     readTheme();
     applyChartDefaults();
+    var view = state.route.view;
+    syncNav();
+    $('#view-history').hidden = view !== 'history';
+    $('#view-match').hidden = view !== 'match';
+    if (view !== 'dash') {
+      $('#onboarding').hidden = true;
+      $('#dashboard').hidden = true;
+      try { if (view === 'history') renderHistory(); else renderMatchPage(); } catch (e) { console.error('render failed: ' + view, e); }
+      return;
+    }
     var has = state.all.length > 0;
     $('#onboarding').hidden = has || !state.loaded;
     // The season goal (and manual entry) is available even before the first tracked match.
@@ -1598,7 +2235,7 @@
       toast('Échec de la mise à jour (' + e.message + ')', true);
     });
   }
-  function deleteMatch(id) {
+  function deleteMatch(id, after) {
     var m = findMatch(id);
     if (!m) return;
     var desc = fmtDate(m._t, true) + ' · ' + (m.mode || '') + ' · ' + num(m.team_score) + '–' + num(m.opp_score);
@@ -1608,7 +2245,7 @@
       delete state.open[id];
       if (state.lastCount != null) state.lastCount = Math.max(0, state.lastCount - 1);
       toast('Match supprimé');
-      renderAll();
+      if (after) after(); else renderAll();
     }).catch(function (e) { toast('Suppression impossible (' + e.message + ')', true); });
   }
 
@@ -1745,6 +2382,11 @@
     bindTable();
     bindSettings();
     bindDayDialog();
+    bindHistory();
+    bindMatchView();
+    window.addEventListener('hashchange', onRoute);
+    syncNav();
+    if (state.route.view !== 'dash') renderAll();
     if (MOCK) {
       $('#export-csv').addEventListener('click', function (e) { e.preventDefault(); toast('Export CSV indisponible en mode démo'); });
     }

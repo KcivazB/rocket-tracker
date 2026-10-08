@@ -11,13 +11,17 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="./" aria-label="Rocket Tracker">
+      <a class="brand" href="#/" aria-label="Rocket Tracker — tableau de bord">
         <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
           <path d="M9 22 L16 7 L23 22 L16 18 Z" fill="var(--us)"/>
           <path d="M16 18 L23 22 L16 25 Z" fill="var(--them)"/>
         </svg>
         <span>Rocket Tracker</span>
       </a>
+      <nav class="nav" aria-label="Navigation principale">
+        <a href="#/" data-nav="dash">Tableau de bord</a>
+        <a href="#/historique" data-nav="history">Historique</a>
+      </nav>
       <div class="topbar-actions">
         <span id="conn-pill" class="pill pill-muted" title="État de la connexion à Rocket League">
           <span class="dot"></span><span class="pill-label">Connexion…</span>
@@ -232,7 +236,7 @@
       <section class="section" aria-labelledby="h-recent" id="recent-section">
         <div class="section-head">
           <h2 id="h-recent">Derniers matchs</h2>
-          <p class="section-sub">Cliquez sur une ligne pour le détail</p>
+          <p class="section-sub">Cliquez sur une ligne pour le détail · <a href="#/historique">Voir tout l’historique <span aria-hidden="true">→</span></a></p>
         </div>
         <div class="card table-card">
           <div class="table-scroll"><table class="data-table matches-table" id="t-matches"></table></div>
@@ -240,6 +244,61 @@
         </div>
       </section>
     </div>
+
+    <!-- History (#/historique) -->
+    <div id="view-history" hidden>
+      <div class="page-head">
+        <h1 id="h-history" tabindex="-1">Historique</h1>
+        <p class="section-sub">Tous vos matchs, jour par jour · cliquez sur un match pour le détail</p>
+      </div>
+      <section class="filters hist-filters" aria-label="Filtres de l’historique">
+        <div class="filter-group">
+          <span class="filter-label">Mode</span>
+          <div class="seg" id="h-mode" role="radiogroup" aria-label="Mode">
+            <button type="button" data-v="all">Tous</button>
+            <button type="button" data-v="1v1">1v1</button>
+            <button type="button" data-v="2v2">2v2</button>
+            <button type="button" data-v="3v3">3v3</button>
+            <button type="button" data-v="other">Autres</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <span class="filter-label">Résultat</span>
+          <div class="seg" id="h-result" role="radiogroup" aria-label="Résultat">
+            <button type="button" data-v="all">Tous</button>
+            <button type="button" data-v="win">Victoires</button>
+            <button type="button" data-v="loss">Défaites</button>
+            <button type="button" data-v="abandoned">Abandons</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <span class="filter-label">Période</span>
+          <div class="seg" id="h-period" role="radiogroup" aria-label="Période">
+            <button type="button" data-v="7">7j</button>
+            <button type="button" data-v="30">30j</button>
+            <button type="button" data-v="90">90j</button>
+            <button type="button" data-v="all">Tout</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label" for="h-tag">Type</label>
+          <select id="h-tag" class="select"><option value="all">Tous</option></select>
+        </div>
+        <div class="filter-group hist-search">
+          <label class="sr-only" for="h-q">Rechercher un joueur ou une arène</label>
+          <input type="search" id="h-q" class="input-search" placeholder="Joueur ou arène…" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="filter-group toggles">
+          <label class="switch"><input type="checkbox" id="h-offline"><span class="track"></span>Inclure hors ligne</label>
+        </div>
+      </section>
+      <p class="hist-summary" id="hist-summary" aria-live="polite"></p>
+      <div id="hist-list" class="hist-list"></div>
+      <div class="hist-more-wrap"><button type="button" class="btn" id="hist-more" hidden>Afficher plus</button></div>
+    </div>
+
+    <!-- Match page (#/match/<id>) -->
+    <div id="view-match" hidden></div>
 
     <footer class="footer">
       <span id="footer-version">Rocket Tracker</span>
