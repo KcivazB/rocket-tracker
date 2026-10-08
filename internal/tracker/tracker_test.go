@@ -841,3 +841,85 @@ func TestSpeedUnitDetection(t *testing.T) {
 		}
 	}
 }
+
+// Regression (first real database): the game sends every goal twice at the
+// same game time, a full GoalScored and an empty one (no scorer, speed 0),
+// sometimes one second apart. The duplicates doubled the scores and shifted
+// the team attribution (my goal counted for the opponent).
+func TestGoalSentFullAndEmpty(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		myTeam     int
+		emptyFirst bool
+	}{{"blue/full-first", 0, false}, {"orange/full-first", 1, false}, {"blue/empty-first", 0, true}} {
+		h := newHarness(t)
+		h.id = Identity{Names: []string{"Me"}}
+		meP, opp := me, op1
+		meP.Team, opp.Team = c.myTeam, 1-c.myTeam
+		g := h.playClock(G{Guid: "FE" + c.name, Players: []P{meP, opp}}, 300, 290)
+		scorers := []P{opp, opp, meP, opp} // real: 1-3
+		for i, s := range scorers {
+			full := map[string]any{"Scorer": s.ref(), "GoalSpeed": 80}
+			empty := map[string]any{"GoalSpeed": 0}
+			if c.emptyFirst {
+				full, empty = empty, full
+			}
+			h.send("GoalScored", full)
+			if i == 3 { // duplicate on the next whole second
+				g.Time--
+				h.update(g)
+			}
+			h.send("GoalScored", empty)
+			g.Scores[s.Team]++
+			if s.Name == meP.Name {
+				meP.Goals++
+			} else {
+				opp.Goals++
+			}
+			g.Players = []P{meP, opp}
+			h.update(g)
+			h.send("RoundStarted", map[string]any{})
+			g = h.playClock(g, 289-i*60, 290-(i+1)*60+1)
+		}
+		h.playClock(g, g.Time, 0)
+		h.send("MatchEnded", map[string]any{"WinnerTeamNum": 1 - c.myTeam})
+		m := h.only()
+		if m.TeamScore != 1 || m.OppScore != 3 || len(m.Goals) != 4 || m.Me.Goals != 1 {
+			t.Fatalf("%s: score %d-%d goals %d me %d", c.name, m.TeamScore, m.OppScore, len(m.Goals), m.Me.Goals)
+		}
+		for i, want := range []string{"them", "them", "us", "them"} {
+			if m.Goals[i].Team != want || m.Goals[i].Scorer == "" {
+				t.Fatalf("%s: goal %d %+v, want team %s", c.name, i, m.Goals[i], want)
+			}
+		}
+		if !m.Goals[2].MeScored {
+			t.Fatalf("%s: my goal not flagged %+v", c.name, m.Goals[2])
+		}
+	}
+}
+
+// Two real goals by the same player a second apart (kickoff goal): the
+// kickoff in between proves the second one is new, not a duplicate.
+func TestQuickGoalAfterKickoffKept(t *testing.T) {
+	h := newHarness(t)
+	h.id = Identity{Names: []string{"Me"}}
+	g := h.playClock(G{Guid: "QK", Players: []P{me, op1}}, 300, 200)
+	goal := map[string]any{"Scorer": me.ref(), "GoalSpeed": 80}
+	h.send("GoalScored", goal)
+	h.send("GoalScored", map[string]any{"GoalSpeed": 0})
+	g.Scores = [2]int{1, 0}
+	h.update(g)
+	h.send("CountdownBegin", map[string]any{})
+	h.send("RoundStarted", map[string]any{})
+	g.Time = 199 // one game second later
+	h.update(g)
+	h.send("GoalScored", goal)
+	h.send("GoalScored", map[string]any{"GoalSpeed": 0})
+	g.Scores = [2]int{2, 0}
+	h.update(g)
+	h.playClock(g, 198, 0)
+	h.send("MatchEnded", map[string]any{"WinnerTeamNum": 0})
+	if m := h.only(); m.TeamScore != 2 || len(m.Goals) != 2 {
+		t.Fatalf("score %d-%d goals %d", m.TeamScore, m.OppScore, len(m.Goals))
+	}
+}

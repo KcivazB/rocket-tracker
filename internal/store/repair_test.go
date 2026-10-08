@@ -7,13 +7,14 @@ import (
 	"time"
 )
 
-// A match as stored by v0.1/v0.2 from the real game: speeds in km/h, goals
-// re-sent during replays (real score 1-3 stored as 1-6), scorer goals bumped.
+// A match as stored by v0.1/v0.2 from the real game (shape of match #7 of
+// the first real database): every goal sent twice, full then empty, the
+// teams shifted by the duplicates, speeds in km/h. Real score 1-3, stored 1-7.
 func brokenMatch() *Match {
 	return &Match{
 		GUID: "G1", Online: true, Mode: "1v1", Result: "loss", MyTeam: 0,
 		StartedAt: time.Date(2026, 10, 8, 17, 46, 0, 0, time.UTC), EndedAt: time.Date(2026, 10, 8, 17, 54, 0, 0, time.UTC),
-		TeamScore: 1, OppScore: 6,
+		TeamScore: 1, OppScore: 7,
 		Me: MeStats{Name: "zaviik.", Score: 250, Goals: 1},
 		Players: []Player{
 			{Name: "zaviik.", Team: 0, Score: 250, Goals: 1, IsMe: true},
@@ -22,13 +23,14 @@ func brokenMatch() *Match {
 		Movement: &Movement{AvgSpeed: 54, GroundPct: 60},
 		Hits:     &Hits{Count: 20, AvgSpeed: 70, MaxSpeed: 110},
 		Goals: []Goal{
-			{T: 30, Team: "them", Scorer: "Opp", Speed: 80},
-			{T: 30, Team: "them", Scorer: "Opp", Speed: 80}, // replay
-			{T: 95, Team: "us", Scorer: "zaviik.", Speed: 60, MeScored: true},
-			{T: 140, Team: "them", Scorer: "Opp", Speed: 100},
-			{T: 140.4, Team: "them", Scorer: "Opp", Speed: 100}, // replay
-			{T: 140, Team: "them", Scorer: "Opp", Speed: 100},   // replay
-			{T: 200, Team: "them", Scorer: "Opp", Speed: 90},
+			{T: 11, Team: "them", Scorer: "Opp", Speed: 80},
+			{T: 11, Team: "them"},
+			{T: 49, Team: "us", Scorer: "Opp", Speed: 83}, // team shifted
+			{T: 49, Team: "them"},
+			{T: 145, Team: "them", Scorer: "zaviik.", Speed: 72}, // my goal, shifted
+			{T: 145, Team: "them"},
+			{T: 233, Team: "them", Scorer: "Opp", Speed: 100},
+			{T: 234, Team: "them"}, // duplicate one second later
 		},
 	}
 }
@@ -41,6 +43,14 @@ func TestRepairGoalsAndSpeeds(t *testing.T) {
 	m.Normalize()
 	if m.TeamScore != 1 || m.OppScore != 3 || m.GoalDiff != -2 || len(m.Goals) != 4 || m.FirstGoal != "them" {
 		t.Fatalf("score %d-%d diff %d goals %d first %s", m.TeamScore, m.OppScore, m.GoalDiff, len(m.Goals), m.FirstGoal)
+	}
+	for i, want := range []string{"them", "them", "us", "them"} {
+		if m.Goals[i].Team != want {
+			t.Fatalf("goal %d team %s, want %s (%+v)", i, m.Goals[i].Team, want, m.Goals)
+		}
+	}
+	if !m.Goals[2].MeScored || m.Goals[0].MeScored {
+		t.Fatalf("me_scored %+v", m.Goals)
 	}
 	if p := m.Players[1]; p.Goals != 3 || p.Score != 600 {
 		t.Fatalf("opponent %+v", p)

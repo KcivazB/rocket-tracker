@@ -151,8 +151,11 @@ type match struct {
 	lastSample    time.Time
 
 	goals []rawGoal
-	feeds []rawFeed
-	hits  []rawHit
+	// kickoffSinceGoal: a kickoff (countdown or round start) happened after
+	// the last goal, so the next GoalScored is a new goal, not a duplicate.
+	kickoffSinceGoal bool
+	feeds            []rawFeed
+	hits             []rawHit
 
 	// Team score increments seen in UpdateState before the matching
 	// GoalScored event arrived.
@@ -378,6 +381,7 @@ func (t *Tracker) HandleEvent(ev statsapi.Event) {
 			}
 			t.cur.roundSeen = true
 			t.cur.inRound = false
+			t.cur.kickoffSinceGoal = true
 		}
 	case statsapi.EvRoundStarted:
 		if t.cur != nil {
@@ -387,6 +391,7 @@ func (t *Tracker) HandleEvent(ev statsapi.Event) {
 			t.cur.roundSeen = true
 			t.cur.inRound = true
 			t.cur.replay = false
+			t.cur.kickoffSinceGoal = true
 		}
 	case statsapi.EvGoalReplayStart:
 		if t.cur != nil {
@@ -629,11 +634,22 @@ func (t *Tracker) onGoal(d *statsapi.GoalScored) {
 	} else if d.BallLastTouch != nil && d.BallLastTouch.Player.Valid() {
 		g.team = int(d.BallLastTouch.Player.TeamNum)
 	}
-	// The clock is stopped from a goal until the next kickoff, so a second
-	// GoalScored for the same scorer at the same game time is the same goal
-	// (replay frames not flagged as such).
-	if n := len(m.goals); n > 0 && m.haveTime {
-		if last := m.goals[n-1]; math.Abs(last.t-g.t) < 1 && sameRef(last.scorer, g.scorer) {
+	// The game sends each goal twice: a full GoalScored and an empty one (no
+	// scorer, speed 0), at the same game time. The clock is stopped from a
+	// goal until the next kickoff, so goals that close are the same goal: keep
+	// one, completed with whatever the other one carries.
+	if n := len(m.goals); n > 0 && m.haveTime && !m.kickoffSinceGoal {
+		if last := &m.goals[n-1]; math.Abs(last.t-g.t) < dupGoalWindow && (last.scorer == nil || g.scorer == nil || sameRef(last.scorer, g.scorer)) {
+			if last.scorer == nil && g.scorer != nil {
+				last.scorer = g.scorer
+				if !last.confirmed {
+					last.team = g.team
+				}
+			}
+			if last.assister == nil {
+				last.assister = g.assister
+			}
+			last.speed = max(last.speed, g.speed)
 			return
 		}
 	}
@@ -646,6 +662,7 @@ func (t *Tracker) onGoal(d *statsapi.GoalScored) {
 		m.pendingInc = m.pendingInc[1:]
 	}
 	m.goals = append(m.goals, g)
+	m.kickoffSinceGoal = false
 	if m.roundSeen {
 		m.inRound = false // clock stops until next kickoff
 	}
@@ -954,6 +971,11 @@ func addFinalGoal(score, counted int) int {
 	}
 	return score
 }
+
+// dupGoalWindow is the game-time window (s) within which two GoalScored
+// events are the same goal: the clock is stopped until the next kickoff, but
+// the duplicate may land on the next whole second.
+const dupGoalWindow = 2
 
 // sameRef reports whether two optional player references are the same player.
 func sameRef(a, b *statsapi.PlayerRef) bool {

@@ -55,9 +55,8 @@ const (
 
 func round1(f float64) float64 { return math.Round(f*10) / 10 }
 
-// repairGoalsAndSpeeds converts km/h speeds to uu/s and removes goals counted
-// twice (the game re-sends GoalScored during goal replays), then recomputes
-// the scores and the scorers' goals from the remaining goals.
+// repairGoalsAndSpeeds converts km/h speeds to uu/s and merges goals counted
+// twice, then recomputes the scores and the scorers' goals from the goals.
 func repairGoalsAndSpeeds(m *Match) bool {
 	changed := false
 	if mv := m.Movement; mv != nil && mv.AvgSpeed > 0 && mv.AvgSpeed <= maxCarKmh {
@@ -80,20 +79,48 @@ func repairGoalsAndSpeeds(m *Match) bool {
 		changed = true
 	}
 
-	// The clock is stopped between a goal and the next kickoff: the same
-	// scorer twice within a second of game time is one goal.
-	kept := make([]Goal, 0, len(m.Goals))
+	// The game sends each goal twice (a full GoalScored and an empty one, no
+	// scorer, speed 0) at the same game time, and the duplicates also shifted
+	// the team attribution. Goals less than 2 s of game time apart are one goal
+	// (the clock is stopped until the next kickoff); its team is the scorer's.
+	if len(m.Goals) < 2 {
+		return changed
+	}
+	teamOf := map[string]string{}
+	for _, p := range m.Players {
+		side := "them"
+		if p.Team == m.MyTeam {
+			side = "us"
+		}
+		teamOf[p.Name] = side
+	}
+	var kept []Goal
 	for _, g := range m.Goals {
-		if n := len(kept); n > 0 {
-			last := kept[n-1]
-			if math.Abs(last.T-g.T) < 1 && last.Scorer == g.Scorer && last.Team == g.Team {
-				continue
+		// Only the observed pattern (one of the pair has no scorer) is merged:
+		// two full goals are kept, the stored data has no kickoff to tell them apart.
+		if n := len(kept); n > 0 && math.Abs(g.T-kept[n-1].T) < 2 && (g.Scorer == "" || kept[n-1].Scorer == "") {
+			last := &kept[n-1]
+			if last.Scorer == "" {
+				last.Scorer, last.Team = g.Scorer, g.Team
 			}
+			if last.Assister == "" {
+				last.Assister = g.Assister
+			}
+			last.Speed = math.Max(last.Speed, g.Speed)
+			continue
 		}
 		kept = append(kept, g)
 	}
 	if len(kept) == len(m.Goals) {
 		return changed
+	}
+	for i := range kept {
+		g := &kept[i]
+		if side, ok := teamOf[g.Scorer]; ok {
+			g.Team = side
+		}
+		g.MeScored = g.Scorer != "" && g.Scorer == m.Me.Name && g.Team == "us"
+		g.MeAssist = g.Assister != "" && g.Assister == m.Me.Name
 	}
 	m.Goals = kept
 	us, them := 0, 0
@@ -105,16 +132,12 @@ func repairGoalsAndSpeeds(m *Match) bool {
 			them++
 		}
 	}
-	m.TeamScore, m.OppScore = min(m.TeamScore, us), min(m.OppScore, them)
+	m.TeamScore, m.OppScore = us, them
 	for i := range m.Players {
 		p := &m.Players[i]
-		side := "them"
-		if p.Team == m.MyTeam {
-			side = "us"
-		}
 		scored := 0
 		for _, g := range kept {
-			if g.Scorer == p.Name && g.Team == side {
+			if g.Scorer == p.Name && g.Team == teamOf[p.Name] {
 				scored++
 			}
 		}

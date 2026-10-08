@@ -585,6 +585,8 @@ func (m *simMatch) goal(ctx context.Context, team int) bool {
 		assister.Score += 50
 	}
 	m.s.emit(statsapi.EvGoalScored, d)
+	// Like the real game: every goal also comes as an empty GoalScored.
+	m.s.emit(statsapi.EvGoalScored, map[string]any{"GoalSpeed": 0, "GoalTime": 0, "MatchGuid": m.guid})
 	m.feed("Goal", scorer, nil)
 	if r.Float64() < 0.2 {
 		m.feed("AerialGoal", scorer, nil)
