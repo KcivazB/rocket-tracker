@@ -43,6 +43,15 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_matches_started ON matches(started_at);
 	CREATE INDEX IF NOT EXISTS idx_matches_guid ON matches(guid);
 	CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);`,
+	// v2: games entered by hand (played while the tracker wasn't running).
+	`CREATE TABLE IF NOT EXISTS manual_days (
+		day        TEXT NOT NULL,
+		mode       TEXT NOT NULL,
+		games      INTEGER NOT NULL,
+		wins       INTEGER NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+		PRIMARY KEY (day, mode)
+	);`,
 }
 
 // Open opens (and creates / migrates) the database at path.

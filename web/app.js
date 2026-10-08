@@ -442,16 +442,21 @@
    * Daily-games goal over a season. Empty season_start = day of the first goal game (or today),
    * empty/invalid season_end = start + 99 days. Today counts as elapsed but is still "in progress":
    * the current streak doesn't break before the day is over.
+   * manual: hand-entered [{day, mode, games, wins}], added on top of the tracked games.
    */
-  function computeGoal(ms, goalCfg, now) {
+  function computeGoal(ms, goalCfg, now, manual) {
     var goal = Object.assign({}, GOAL_DEFAULT, goalCfg || {});
     var daily = isNum(goal.daily) && goal.daily > 0 ? Math.round(goal.daily) : GOAL_DEFAULT.daily;
     now = isNum(now) ? now : Date.now();
     var today = startOfDay(now);
     var gms = (ms || []).filter(function (m) { return m && isGoalGame(m, goal); });
     var tOf = function (m) { return m._t != null ? m._t : startMs(m); };
+    var man = (manual || []).filter(function (e) {
+      return e && parseDay(e.day) != null && num(e.games) > 0 && (goal.mode === 'all' || e.mode === goal.mode);
+    });
+    var firsts = gms.map(tOf).concat(man.map(function (e) { return parseDay(e.day); }));
     var start = parseDay(goal.season_start);
-    if (start == null) start = gms.length ? startOfDay(Math.min.apply(null, gms.map(tOf))) : today;
+    if (start == null) start = firsts.length ? startOfDay(Math.min.apply(null, firsts)) : today;
     var end = parseDay(goal.season_end);
     if (end == null || end < start) end = addDays(start, 99);
     if (end > addDays(start, MAX_SEASON_DAYS - 1)) end = addDays(start, MAX_SEASON_DAYS - 1);
@@ -463,10 +468,15 @@
       d.count++;
       if (isWin(m)) d.wins++; else d.losses++;
     });
+    man.forEach(function (e) {
+      var d = byDay[e.day] || (byDay[e.day] = { count: 0, wins: 0, losses: 0 });
+      var g = Math.round(num(e.games)), w = Math.min(g, Math.max(0, Math.round(num(e.wins))));
+      d.count += g; d.wins += w; d.losses += g - w; d.manual = (d.manual || 0) + g;
+    });
     var days = [];
     for (var t = start; t <= end; t = addDays(t, 1)) {
       var k = dayKey(t), d = byDay[k] || { count: 0, wins: 0, losses: 0 };
-      days.push({ key: k, t: t, count: d.count, wins: d.wins, losses: d.losses, met: d.count >= daily, future: t > today, today: t === today });
+      days.push({ key: k, t: t, count: d.count, wins: d.wins, losses: d.losses, manual: d.manual || 0, met: d.count >= daily, future: t > today, today: t === today });
     }
     var total = 0, wins = 0, losses = 0, elapsed = 0, met = 0, best = 0, run = 0, remainingDays = 0;
     days.forEach(function (d) {
@@ -497,6 +507,18 @@
       today: { count: todayStats.count, wins: todayStats.wins, losses: todayStats.losses },
       before: today < start, after: today > end
     };
+  }
+
+  // Tracked online finished games of one local day, per mode: {'1v1': {games, wins}, ...}.
+  function trackedByMode(ms, day) {
+    var out = {};
+    (ms || []).forEach(function (m) {
+      if (!m || m.online === false || !isDecided(m) || dayKey(m._t != null ? m._t : startMs(m)) !== day) return;
+      var o = out[m.mode] || (out[m.mode] = { games: 0, wins: 0 });
+      o.games++;
+      if (isWin(m)) o.wins++;
+    });
+    return out;
   }
 
   // tracker.gg profile URL from a Stats API PrimaryId ("Platform|Uid|Splitscreen").
@@ -568,7 +590,7 @@
     computeActivity: computeActivity, computeGoalDiffDist: computeGoalDiffDist, computeMental: computeMental,
     computeSituations: computeSituations, computeGoalsPerMinute: computeGoalsPerMinute, computeMechanics: computeMechanics,
     computeStatfeed: computeStatfeed, statfeedLabel: statfeedLabel, prettyArena: prettyArena, computeArenas: computeArenas,
-    computeTeammates: computeTeammates, computeGoal: computeGoal, trackerUrl: trackerUrl, fmtNum: fmtNum, fmtPct: fmtPct, fmtPct100: fmtPct100, fmtSigned: fmtSigned,
+    computeTeammates: computeTeammates, computeGoal: computeGoal, trackedByMode: trackedByMode, trackerUrl: trackerUrl, fmtNum: fmtNum, fmtPct: fmtPct, fmtPct100: fmtPct100, fmtSigned: fmtSigned,
     fmtClock: fmtClock, fmtHours: fmtHours, dayKey: dayKey
   };
 
@@ -608,7 +630,8 @@
     shown: PAGE_SIZE,
     open: {},
     loaded: false,
-    config: null
+    config: null,
+    manual: []
   };
   var charts = {};
 
@@ -658,6 +681,13 @@
         if (idx < 0) throw new Error('HTTP 404');
         if (method === 'DELETE') { mock.matches.splice(idx, 1); return null; }
         if (method === 'PATCH') { Object.assign(mock.matches[idx], JSON.parse(opts.body || '{}')); return mock.matches[idx]; }
+      }
+      if (path === '/api/manual' && method === 'GET') return JSON.parse(JSON.stringify(mock.manual || []));
+      if ((m = path.match(/^\/api\/manual\/(\d{4}-\d{2}-\d{2})\/(\w+)$/)) && method === 'PUT') {
+        var b = JSON.parse(opts.body || '{}');
+        mock.manual = (mock.manual || []).filter(function (e) { return !(e.day === m[1] && e.mode === m[2]); });
+        if (b.games > 0) mock.manual.push({ day: m[1], mode: m[2], games: b.games, wins: b.wins || 0 });
+        return { day: m[1], mode: m[2], games: b.games, wins: b.wins || 0 };
       }
       if (path === '/api/config') {
         if (method === 'PUT') { mock.config = JSON.parse(opts.body); return mock.config; }
@@ -840,7 +870,7 @@
       '<span class="kpi-sub">' + sub + '</span></div>';
   }
   function renderGoal() {
-    var g = computeGoal(state.all, state.config && state.config.goal);
+    var g = computeGoal(state.all, state.config && state.config.goal, null, state.manual);
     var modeLbl = GOAL_MODE_LABEL[g.mode] || g.mode;
     var fmtD = function (t) { return new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }); };
     $('#goal-sub').textContent = g.daily + ' games de ' + modeLbl + ' par jour · du ' + fmtD(g.start) + ' au ' + fmtD(g.end) + ' (' + g.days.length + ' jours)';
@@ -864,6 +894,7 @@
       goalKpi('Pour finir à ' + fmtNum(g.target), g.neededPerDay != null ? fmtNum(g.neededPerDay) + '<small> / jour</small>' : '—',
         g.neededPerDay == null ? 'Saison terminée' : g.total >= g.target ? '<span class="pos">Objectif de saison atteint ✓</span>' : plural(g.target - g.total, 'game') + ' restantes sur ' + plural(g.remainingDays, 'jour'), null);
     $('#goal-kpis').innerHTML = html;
+    $('#goal-hint').hidden = !!(state.config && state.config.goal && state.config.goal.season_start);
 
     // One grid per month, Monday first.
     var months = [], cur = null;
@@ -885,11 +916,13 @@
         else if (d.count === 0) cls += d.today ? ' l0' : ' miss';
         else cls += ' l' + Math.min(3, 1 + Math.floor(d.count / g.daily * 3));
         if (d.today) cls += ' today';
+        if (d.manual) cls += ' has-manual';
         var tip = new Date(d.t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) + ' · ' +
-          (d.future ? 'à venir' : plural(d.count, 'game') + (d.count ? ' (' + d.wins + ' V – ' + d.losses + ' D)' : '') + (d.met ? ' · objectif atteint' : ''));
-        cells += '<span class="' + cls + '" title="' + esc(tip) + '" aria-label="' + esc(tip) + '">' +
-          '<span class="dn">' + new Date(d.t).getDate() + '</span>' +
-          (d.future ? '' : '<span class="dc">' + d.count + '</span>') + '</span>';
+          (d.future ? 'à venir' : plural(d.count, 'game') + (d.count ? ' (' + d.wins + ' V – ' + d.losses + ' D)' : '') + (d.manual ? ' · dont ' + d.manual + ' saisie' + (d.manual > 1 ? 's' : '') + ' à la main' : '') + (d.met ? ' · objectif atteint' : ''));
+        var inner = '<span class="dn">' + new Date(d.t).getDate() + '</span>' + (d.future ? '' : '<span class="dc">' + d.count + '</span>');
+        cells += d.future
+          ? '<span class="' + cls + '" title="' + esc(tip) + '" aria-label="' + esc(tip) + '">' + inner + '</span>'
+          : '<button type="button" class="' + cls + '" data-day="' + d.key + '" title="' + esc(tip + ' · cliquer pour saisir des games') + '" aria-label="' + esc(tip + '. Saisir des games') + '">' + inner + '</button>';
       });
       var name = first.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
       var mTotal = mo.days.reduce(function (a, d) { return a + d.count; }, 0);
@@ -1476,10 +1509,12 @@
     applyChartDefaults();
     var has = state.all.length > 0;
     $('#onboarding').hidden = has || !state.loaded;
-    $('#dashboard').hidden = !has;
+    // The season goal (and manual entry) is available even before the first tracked match.
+    $('#dashboard').hidden = !state.loaded;
+    $$('#dashboard > :not(#goal-section)').forEach(function (el) { if (!has) el.hidden = true; else if (el.id !== 'no-results' && el.id !== 'content') el.hidden = false; });
+    try { renderGoal(); } catch (e) { console.error('render failed: renderGoal', e); }
     if (!has) { Object.keys(charts).forEach(function (k) { charts[k].destroy(); delete charts[k]; }); return; }
     syncFilterUi();
-    try { renderGoal(); } catch (e) { console.error('render failed: renderGoal', e); }
     var ms = filterMatches(state.all, state.filters);
     state.filtered = ms;
     var total = state.all.length;
@@ -1634,6 +1669,66 @@
     });
   }
 
+  /* ---------- manual games (day dialog) ---------- */
+  var MANUAL_MODES = ['1v1', '2v2', '3v3', '4v4'];
+  var dayDialogKey = null;
+  function loadManual() {
+    return apiFetch('/api/manual').then(function (d) { state.manual = Array.isArray(d) ? d : []; })
+      .catch(function (e) { console.warn('manual', e); });
+  }
+  function manualFor(day, mode) {
+    return state.manual.find(function (e) { return e.day === day && e.mode === mode; }) || { games: 0, wins: 0 };
+  }
+  function openDay(day) {
+    dayDialogKey = day;
+    var dlg = $('#day-dialog');
+    var t = parseDay(day);
+    var title = new Date(t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    $('#day-title').textContent = title.charAt(0).toUpperCase() + title.slice(1);
+    var tracked = trackedByMode(state.all, day);
+    $('#day-rows').innerHTML = MANUAL_MODES.map(function (mode) {
+      var tr = tracked[mode] || { games: 0, wins: 0 }, mn = manualFor(day, mode);
+      return '<tr data-mode="' + mode + '"><th scope="row">' + mode + '</th>' +
+        '<td class="r muted">' + (tr.games ? tr.games + ' <small>(' + tr.wins + ' V)</small>' : '—') + '</td>' +
+        '<td><input type="number" min="0" max="500" step="1" inputmode="numeric" name="g-' + mode + '" value="' + num(mn.games) + '" aria-label="Games ' + mode + ' saisies"></td>' +
+        '<td><input type="number" min="0" max="500" step="1" inputmode="numeric" name="w-' + mode + '" value="' + num(mn.wins) + '" aria-label="Victoires ' + mode + ' saisies"></td></tr>';
+    }).join('');
+    var msg = $('#day-msg'); msg.textContent = ''; msg.className = 'form-msg';
+    if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+  }
+  function bindDayDialog() {
+    var dlg = $('#day-dialog'), form = $('#day-form');
+    $('#goal-cal').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-day]');
+      if (b) openDay(b.getAttribute('data-day'));
+    });
+    $$('[data-close]', dlg).forEach(function (b) { b.addEventListener('click', function () { dlg.close ? dlg.close() : dlg.removeAttribute('open'); }); });
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var day = dayDialogKey, msg = $('#day-msg'), changes = [];
+      for (var i = 0; i < MANUAL_MODES.length; i++) {
+        var mode = MANUAL_MODES[i];
+        var g = parseInt(form.elements['g-' + mode].value || '0', 10), w = parseInt(form.elements['w-' + mode].value || '0', 10);
+        if (!isNum(g) || !isNum(w) || g < 0 || w < 0 || g > 500) { msg.textContent = mode + ' : nombre invalide'; msg.className = 'form-msg err'; return; }
+        if (w > g) { msg.textContent = mode + ' : plus de victoires que de games'; msg.className = 'form-msg err'; return; }
+        var cur = manualFor(day, mode);
+        if (g !== num(cur.games) || (g > 0 && w !== num(cur.wins))) changes.push({ mode: mode, games: g, wins: g ? w : 0 });
+      }
+      if (!changes.length) { dlg.close ? dlg.close() : dlg.removeAttribute('open'); return; }
+      msg.textContent = 'Enregistrement…'; msg.className = 'form-msg';
+      Promise.all(changes.map(function (c) {
+        return apiFetch('/api/manual/' + day + '/' + c.mode, { method: 'PUT', body: JSON.stringify({ games: c.games, wins: c.wins }) });
+      })).then(loadManual).then(function () {
+        dlg.close ? dlg.close() : dlg.removeAttribute('open');
+        toast('Games du ' + new Date(parseDay(day)).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) + ' enregistrées');
+        renderAll();
+      }).catch(function (err) {
+        msg.textContent = 'Échec de l’enregistrement (' + err.message + ')'; msg.className = 'form-msg err';
+        loadManual().then(renderAll);
+      });
+    });
+  }
+
   var toastTimer = null;
   function toast(text, isErr) {
     var t = $('#toast');
@@ -1649,6 +1744,7 @@
     bindFilters();
     bindTable();
     bindSettings();
+    bindDayDialog();
     if (MOCK) {
       $('#export-csv').addEventListener('click', function (e) { e.preventDefault(); toast('Export CSV indisponible en mode démo'); });
     }
@@ -1660,7 +1756,7 @@
     readTheme();
     applyChartDefaults();
     var cfgReady = apiFetch('/api/config').then(function (c) { state.config = c || null; }).catch(function (e) { console.warn('config', e); });
-    Promise.all([pollStatus(), cfgReady.then(loadMatches)]).then(function () {
+    Promise.all([pollStatus(), Promise.all([cfgReady, loadManual()]).then(loadMatches)]).then(function () {
       if (state.status && isNum(state.status.match_count)) state.lastCount = state.status.match_count;
     });
     setInterval(pollStatus, 3000);

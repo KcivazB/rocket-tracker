@@ -202,3 +202,33 @@ func TestPutConfigGoalPartial(t *testing.T) {
 		t.Fatalf("goal merge: %+v", c)
 	}
 }
+
+func TestManualAPI(t *testing.T) {
+	ts, _ := newTestServer(t)
+	if resp, body := do(t, "GET", ts.URL+"/api/manual", ""); resp.StatusCode != 200 || strings.TrimSpace(body) != "[]" {
+		t.Fatalf("empty list %d %q", resp.StatusCode, body)
+	}
+	for _, c := range []struct{ path, body string }{
+		{"/api/manual/2026-10-08/1v1", `{"games":3,"wins":4}`},
+		{"/api/manual/2026-10-08/5v5", `{"games":3,"wins":1}`},
+		{"/api/manual/not-a-day/1v1", `{"games":3,"wins":1}`},
+		{"/api/manual/2026-10-08/1v1", `{"wins":1}`},
+		{"/api/manual/2026-10-08/1v1", `nope`},
+	} {
+		if resp, body := do(t, "PUT", ts.URL+c.path, c.body); resp.StatusCode != 400 {
+			t.Fatalf("PUT %s %s: want 400, got %d %s", c.path, c.body, resp.StatusCode, body)
+		}
+	}
+	if resp, body := do(t, "PUT", ts.URL+"/api/manual/2026-10-08/1V1", `{"games":7,"wins":4}`); resp.StatusCode != 200 {
+		t.Fatalf("put %d %s", resp.StatusCode, body)
+	}
+	if _, body := do(t, "GET", ts.URL+"/api/manual", ""); !strings.Contains(body, `{"day":"2026-10-08","mode":"1v1","games":7,"wins":4}`) {
+		t.Fatalf("list %s", body)
+	}
+	if resp, _ := do(t, "PUT", ts.URL+"/api/manual/2026-10-08/1v1", `{"games":0}`); resp.StatusCode != 200 {
+		t.Fatalf("delete %d", resp.StatusCode)
+	}
+	if _, body := do(t, "GET", ts.URL+"/api/manual", ""); strings.TrimSpace(body) != "[]" {
+		t.Fatalf("after delete %s", body)
+	}
+}

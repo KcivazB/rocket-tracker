@@ -72,8 +72,10 @@
           <span><i class="cal-swatch miss"></i>0 game</span>
           <span><i class="cal-swatch l1"></i><i class="cal-swatch l2"></i><i class="cal-swatch l3"></i>en cours</span>
           <span><i class="cal-swatch met"></i>objectif atteint</span>
-          <span class="muted">Games en ligne terminées (abandons exclus)</span>
+          <span><i class="cal-swatch manual"></i>saisie manuelle</span>
+          <span class="muted">Games en ligne terminées (abandons exclus) · cliquez sur un jour pour ajouter des games</span>
         </div>
+        <p class="goal-hint" id="goal-hint" hidden>Pour saisir des games de jours passés, fixez la <button type="button" class="linklike" data-open-settings>date de début de saison</button>.</p>
         <div class="cal-grid" id="goal-cal"></div>
       </section>
 
@@ -297,6 +299,27 @@
       <footer class="modal-foot">
         <button type="button" class="btn btn-ghost" data-close>Annuler</button>
         <button type="submit" class="btn btn-primary" id="settings-save">Enregistrer</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="day-dialog" class="modal">
+    <form method="dialog" id="day-form">
+      <header class="modal-head">
+        <h2 id="day-title">Jour</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Fermer">×</button>
+      </header>
+      <div class="modal-body">
+        <p class="muted small">Ajoutez les games jouées sans le tracker (avant son installation, PC éteint…). Elles s’ajoutent aux games suivies automatiquement et comptent dans l’objectif saison. Mettez 0 pour effacer.</p>
+        <table class="day-table">
+          <thead><tr><th>Mode</th><th class="r">Suivies</th><th>Games ajoutées</th><th>Dont victoires</th></tr></thead>
+          <tbody id="day-rows"></tbody>
+        </table>
+        <p class="form-msg" id="day-msg" role="status"></p>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
       </footer>
     </form>
   </dialog>

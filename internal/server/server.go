@@ -54,6 +54,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/export.csv", s.exportCSV)
 	mux.HandleFunc("GET /api/config", s.getConfig)
 	mux.HandleFunc("PUT /api/config", s.putConfig)
+	mux.HandleFunc("GET /api/manual", s.listManual)
+	mux.HandleFunc("PUT /api/manual/{day}/{mode}", s.putManual)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "unknown endpoint")
 	})
@@ -221,6 +223,41 @@ func (s *Server) deleteMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listManual(w http.ResponseWriter, r *http.Request) {
+	ds, err := s.Store.ListManual(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ds)
+}
+
+// putManual sets the hand-entered games of one day and mode; games 0 removes the entry.
+func (s *Server) putManual(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Games *int `json:"games"`
+		Wins  int  `json:"wins"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.Games == nil {
+		writeErr(w, http.StatusBadRequest, "missing games")
+		return
+	}
+	d := store.ManualDay{Day: r.PathValue("day"), Mode: strings.ToLower(r.PathValue("mode")), Games: *body.Games, Wins: body.Wins}
+	err := s.Store.SetManual(r.Context(), d)
+	if errors.Is(err, store.ErrInvalidManual) {
+		writeErr(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "store: invalid manual entry: "))
+		return
+	} else if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
