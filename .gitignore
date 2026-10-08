@@ -1,0 +1,16 @@
+# Build output
+/dist/
+
+# Local data (never commit a real database, config or API key)
+*.db
+*.db-wal
+*.db-shm
+*.log
+config.json
+trn*.txt
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
