@@ -16,8 +16,10 @@ RUN CGO_ENABLED=0 go build -trimpath \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/rltracker-server /rltracker-server
 COPY --from=build --chown=nonroot:nonroot /out/data /data
+# TMPDIR: SQLite's temporary files go to the data volume (the root filesystem may be read-only).
 ENV RT_LISTEN=:8080 \
-    RT_DATA_DIR=/data
+    RT_DATA_DIR=/data \
+    TMPDIR=/data/tmp
 EXPOSE 8080
 VOLUME ["/data"]
 USER nonroot:nonroot

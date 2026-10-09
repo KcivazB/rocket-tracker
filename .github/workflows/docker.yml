@@ -32,7 +32,7 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/self-hosted' || github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha
