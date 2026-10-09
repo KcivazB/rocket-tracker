@@ -171,3 +171,45 @@ func TestConcurrentReadWrite(t *testing.T) {
 		t.Fatalf("count %d", n)
 	}
 }
+
+// The desktop app is killed rather than closed: after a checkpoint, the .db
+// file alone (copied without its -wal) must hold every match.
+func TestCheckpointKeepsDBFileComplete(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 0; i < 3; i++ {
+		m := &Match{GUID: fmt.Sprintf("G%d", i), Online: true, StartedAt: time.Date(2026, 10, 1, 20, i, 0, 0, time.UTC), Result: "win"}
+		if err := s.Save(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Checkpoint(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path + "-wal"); err == nil && fi.Size() != 0 {
+		t.Fatalf("wal not truncated: %d bytes", fi.Size())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := filepath.Join(dir, "copy.db")
+	if err := os.WriteFile(cp, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Open(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if n, err := c.Count(ctx); err != nil || n != 3 {
+		t.Fatalf("copy has %d matches, err %v", n, err)
+	}
+}

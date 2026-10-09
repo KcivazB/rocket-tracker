@@ -179,8 +179,18 @@ func (s *Store) migrate() error {
 	return nil
 }
 
-// Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+// Checkpoint copies the WAL into the database file and empties it, so the .db
+// file alone holds every write. The desktop app is usually killed rather than
+// closed, and its WAL never grows enough for SQLite to checkpoint on its own.
+func (s *Store) Checkpoint(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
+}
+
+// Close checkpoints then closes the database.
+func (s *Store) Close() error {
+	return errors.Join(s.Checkpoint(context.Background()), s.db.Close())
+}
 
 const tsLayout = time.RFC3339
 

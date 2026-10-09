@@ -35,7 +35,7 @@ import (
 )
 
 // Version is the application version (overridable with -ldflags -X main.Version=...).
-var Version = "0.4.0"
+var Version = "0.4.1"
 
 type globals struct {
 	dataDir string
@@ -198,6 +198,10 @@ func cmdRun(args []string, console bool) error {
 		return err
 	}
 	defer st.Close()
+	// Merges a WAL left behind by a killed run (or an older version).
+	if err := st.Checkpoint(context.Background()); err != nil {
+		log.Warn("database checkpoint failed", "err", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -219,7 +223,14 @@ func cmdRun(args []string, console bool) error {
 		Save: func(m *store.Match) error {
 			sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return st.Save(sctx, m)
+			if err := st.Save(sctx, m); err != nil {
+				return err
+			}
+			// The app is killed rather than closed: keep the .db file complete.
+			if err := st.Checkpoint(sctx); err != nil {
+				log.Warn("database checkpoint failed", "err", err)
+			}
+			return nil
 		},
 	})
 

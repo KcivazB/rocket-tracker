@@ -108,7 +108,7 @@ Each player:
 3. optionally uploads their old local matches: `rltracker agent import`.
 
 **Offline import.** When a gaming PC and the server never run at the same time (same machine, dual boot…), the
-agent's matches stay queued on the PC. Copy `%APPDATA%\RocketTrackerltracker.db` (local mode) and/or the `.json`
+agent's matches stay queued on the PC. Copy `%APPDATA%\RocketTracker\rltracker.db` (local mode) and/or the `.json`
 files of `%APPDATA%\RocketTracker\outbox\`, then either click **Import** in the dashboard and pick them, or put
 them in `data/import/` and run:
 
