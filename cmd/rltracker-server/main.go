@@ -39,7 +39,7 @@ import (
 )
 
 // Version is overridable with -ldflags "-X main.Version=...".
-var Version = "0.4.1"
+var Version = "0.4.2"
 
 func env(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
@@ -167,7 +167,12 @@ func run(args []string) error {
 		}
 	}()
 
-	srv := &server.Server{Version: Version, Store: st, Static: web.FS, Log: log.With("component", "http"), Hub: hub}
+	// The container's root filesystem may be read-only: uploads go to the data volume.
+	tmpDir := filepath.Join(*dataDir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		return fmt.Errorf("temp dir: %w", err)
+	}
+	srv := &server.Server{Version: Version, Store: st, Static: web.FS, Log: log.With("component", "http"), Hub: hub, TempDir: tmpDir}
 	log.Info("rocket tracker server started", "version", Version, "listen", *listen, "public_url", pub,
 		"oidc", hub.OIDC != nil, "data_dir", *dataDir)
 	if err := srv.ListenAndServeAddr(ctx, *listen); err != nil {

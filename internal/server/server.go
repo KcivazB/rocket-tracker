@@ -35,7 +35,8 @@ type Server struct {
 	ConnStatus func() (bool, string) // may be nil
 	Static     fs.FS                 // may be nil
 	Log        *slog.Logger
-	Hub        *Hub // non-nil: multi-user server mode
+	Hub        *Hub   // non-nil: multi-user server mode
+	TempDir    string // uploaded databases are written here ("" = the system temp dir)
 
 	iniMu   sync.Mutex
 	iniAt   time.Time

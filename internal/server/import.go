@@ -232,7 +232,7 @@ func (s *Server) importPart(ctx context.Context, im *Importer, name string, part
 		}
 		return im.QueueEntry(ctx, name, data)
 	}
-	dir, err := os.MkdirTemp("", "rltracker-import-")
+	dir, err := os.MkdirTemp(s.TempDir, "rltracker-import-")
 	if err != nil {
 		return ImportResult{}, err
 	}
