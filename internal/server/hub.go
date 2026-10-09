@@ -29,6 +29,7 @@ type Hub struct {
 	OIDC       *OIDC         // nil when only DevLogin is enabled
 	DevLogin   bool          // INSECURE: sign in as anyone (local testing)
 	SessionTTL time.Duration // default 30 days
+	Discord    *Discord      // nil: no Discord posts
 
 	agents agentRegistry
 }
@@ -404,9 +405,13 @@ func (s *Server) agentMatch(w http.ResponseWriter, r *http.Request) {
 		ID    int64       `json:"id"`
 		Alert *tilt.Alert `json:"alert,omitempty"` // break suggestion, shown by the agent
 	}{ID: m.ID}
-	if c.TiltStreak > 0 {
+	if c.TiltStreak > 0 || (s.Hub.Discord != nil && !c.DiscordOff) {
 		if ms, err := s.Store.User(u.ID).List(r.Context()); err == nil {
-			resp.Alert = tilt.Check(ms, c.TiltStreak, time.Now())
+			now := time.Now()
+			resp.Alert = tilt.Check(ms, c.TiltStreak, now)
+			if s.Hub.Discord != nil && !c.DiscordOff {
+				s.Hub.Discord.Match(u, m, ms, now)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)

@@ -67,6 +67,8 @@ docker compose logs -f
 | `RT_DATA_DIR` | `/data` (image) | Where `rltracker-server.db` lives. |
 | `RT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`. |
 | `RT_INSECURE_DEV_LOGIN` | — | `1` lets anyone sign in as anyone. **Local tests only.** |
+| `RT_DISCORD_WEBHOOK` / `RT_DISCORD_WEBHOOK_FILE` | — | Discord webhook URL (or a file containing it): see [Discord](#discord). |
+| `RT_LANG` | `en` | `fr` or `en`: language of the Discord posts. |
 
 ## 3. Reverse proxy
 
@@ -121,6 +123,19 @@ can be deleted from the PC's `outbox\` (the agent would otherwise send them agai
 
 A player can register several PCs. The status pill shows whether an agent is online and connected to the game;
 the Players page shows who is in a match right now.
+
+### Discord
+
+With a webhook (Discord: channel settings → Integrations → Webhooks → New webhook → Copy URL) in
+`RT_DISCORD_WEBHOOK`, the server posts to that channel:
+
+- the highlights of a won match: overtime, hat trick, comeback from 2 goals down or more, every 5 wins in a row;
+- a recap when a player's session ends (no match for 30 minutes, 3 matches at least);
+- every Monday at 9:00 (server time, set `TZ` in the container), last week's leaderboard (5 decided matches at
+  least).
+
+Only online matches sent live by an agent count (not imports, nor a queue sent hours later). A player can opt
+out in **Settings**. The last weekly post is remembered in `data/discord.json`.
 
 ## Backups and upgrades
 

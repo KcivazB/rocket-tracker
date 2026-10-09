@@ -14,6 +14,8 @@
 //	RT_SESSION_DAYS          session lifetime (default 30)
 //	RT_INSECURE_DEV_LOGIN    1: sign in as anyone without a provider (tests only)
 //	RT_LOG_LEVEL             debug | info (default) | warn
+//	RT_DISCORD_WEBHOOK       optional Discord webhook URL (or RT_DISCORD_WEBHOOK_FILE): highlights, session and weekly recaps
+//	RT_LANG                  fr | en: language of the Discord posts (default en)
 package main
 
 import (
@@ -31,7 +33,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // TZ works without zoneinfo in the image (weekly Discord recap)
 
+	"rocket-tracker/internal/i18n"
 	"rocket-tracker/internal/server"
 	"rocket-tracker/internal/sim"
 	"rocket-tracker/internal/store"
@@ -39,7 +43,7 @@ import (
 )
 
 // Version is overridable with -ldflags "-X main.Version=...".
-var Version = "0.7.0"
+var Version = "0.8.0"
 
 func env(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
@@ -172,9 +176,24 @@ func run(args []string) error {
 	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
 		return fmt.Errorf("temp dir: %w", err)
 	}
+	webhook := os.Getenv("RT_DISCORD_WEBHOOK")
+	if f := os.Getenv("RT_DISCORD_WEBHOOK_FILE"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("RT_DISCORD_WEBHOOK_FILE: %w", err)
+		}
+		webhook = strings.TrimSpace(string(b))
+	}
+	if webhook != "" {
+		lang, _ := i18n.FromEnv()
+		hub.Discord = &server.Discord{WebhookURL: webhook, PublicURL: pub, Lang: lang,
+			StateFile: filepath.Join(*dataDir, "discord.json"), Log: log.With("component", "discord")}
+		go hub.Discord.Run(ctx, st)
+	}
+
 	srv := &server.Server{Version: Version, Store: st, Static: web.FS, Log: log.With("component", "http"), Hub: hub, TempDir: tmpDir}
 	log.Info("rocket tracker server started", "version", Version, "listen", *listen, "public_url", pub,
-		"oidc", hub.OIDC != nil, "data_dir", *dataDir)
+		"oidc", hub.OIDC != nil, "discord", hub.Discord != nil, "data_dir", *dataDir)
 	if err := srv.ListenAndServeAddr(ctx, *listen); err != nil {
 		return err
 	}

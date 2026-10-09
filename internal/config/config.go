@@ -23,6 +23,8 @@ type Config struct {
 	// TiltStreak: consecutive losses in a session that suggest a break
 	// (desktop notification); 0 = no tilt alerts.
 	TiltStreak int `json:"tilt_streak"`
+	// DiscordOff: server mode, keep this player out of the Discord posts.
+	DiscordOff bool `json:"discord_off"`
 }
 
 // Goal is the daily games objective shown in the calendar view.

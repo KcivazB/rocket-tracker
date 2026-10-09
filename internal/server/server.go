@@ -176,7 +176,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "local", "version": s.Version})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"mode": "server", "version": s.Version, "user": userFrom(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"mode": "server", "version": s.Version, "user": userFrom(r), "discord": s.Hub.Discord != nil})
 }
 
 func (s *Server) ini(cfg config.Config) setup.IniStatus {

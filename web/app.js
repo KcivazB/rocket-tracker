@@ -2677,6 +2677,7 @@
       form.elements.player_ids.value = (currentConfig.player_ids || []).join(', ');
       form.elements.default_tag.innerHTML = tagOptions(currentConfig.default_tag || 'ranked');
       form.elements.tilt_streak.innerHTML = tiltOptions(isNum(currentConfig.tilt_streak) ? currentConfig.tilt_streak : 3);
+      form.elements.discord_on.checked = !currentConfig.discord_off;
       form.elements.rl_install_dir.value = currentConfig.rl_install_dir || '';
       var goal = Object.assign({}, GOAL_DEFAULT, currentConfig.goal || {});
       form.elements.goal_mode.value = goal.mode;
@@ -2700,6 +2701,7 @@
         player_ids: split(form.elements.player_ids.value),
         default_tag: form.elements.default_tag.value,
         tilt_streak: parseInt(form.elements.tilt_streak.value, 10) || 0,
+        discord_off: !form.elements.discord_on.checked,
         rl_install_dir: form.elements.rl_install_dir.value.trim(),
         goal: {
           mode: form.elements.goal_mode.value,
@@ -2801,6 +2803,7 @@
     $('#nav-players').hidden = !srv;
     $('#user-menu').hidden = !srv;
     $$('.local-only').forEach(function (el) { el.hidden = srv; });
+    $$('.discord-only').forEach(function (el) { el.hidden = !(srv && state.discord); });
     if (srv && state.me) {
       $('#me-name').textContent = state.me.name || state.me.handle;
       $('#me-avatar').textContent = initial(state.me.name || state.me.handle);
@@ -3076,6 +3079,7 @@
     apiFetch('/api/session').catch(function () { return { mode: 'local' }; }).then(function (s) {
       state.mode = s && s.mode === 'server' ? 'server' : 'local';
       state.me = (s && s.user) || null;
+      state.discord = !!(s && s.discord);
       applyMode();
       var self = selfRoute(state.route);
       if (self) { location.replace(self); state.route = parseRoute(self); }
