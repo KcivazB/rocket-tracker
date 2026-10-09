@@ -22,6 +22,7 @@ import (
 	"rocket-tracker/internal/setup"
 	"rocket-tracker/internal/store"
 	"rocket-tracker/internal/tracker"
+	"rocket-tracker/internal/update"
 )
 
 // Server wires the HTTP API. Without Hub it is the local dashboard of a
@@ -35,8 +36,9 @@ type Server struct {
 	ConnStatus func() (bool, string) // may be nil
 	Static     fs.FS                 // may be nil
 	Log        *slog.Logger
-	Hub        *Hub   // non-nil: multi-user server mode
-	TempDir    string // uploaded databases are written here ("" = the system temp dir)
+	Hub        *Hub                   // non-nil: multi-user server mode
+	TempDir    string                 // uploaded databases are written here ("" = the system temp dir)
+	Update     func() *update.Release // local mode: the newer release found, or nil; may be nil
 
 	iniMu   sync.Mutex
 	iniAt   time.Time
@@ -156,7 +158,8 @@ type statusJSON struct {
 	Ini        *setup.IniStatus `json:"ini"`
 	Identity   identityJSON     `json:"identity"`
 	MatchCount int              `json:"match_count"`
-	Agent      *agentJSON       `json:"agent,omitempty"` // server mode
+	Agent      *agentJSON       `json:"agent,omitempty"`  // server mode
+	Update     *update.Release  `json:"update,omitempty"` // local mode: newer release available
 }
 
 // session tells the dashboard which mode it runs in and who is signed in.
@@ -197,6 +200,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	}
 	if n, err := s.Store.Count(r.Context()); err == nil {
 		st.MatchCount = n
+	}
+	if s.Update != nil {
+		st.Update = s.Update()
 	}
 	writeJSON(w, http.StatusOK, st)
 }

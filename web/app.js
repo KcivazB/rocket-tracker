@@ -2377,6 +2377,9 @@
       } else if (ag.online && !s.connected && ini2 && !ini2.found) {
         w.push(warning('!', tr('st.agentApiMissing', { dev: dev }), tr('st.agentApiMissingText')));
       }
+      if (ag.devices && versionBelow(ag.version, s.version)) {
+        w.push(warning('i', tr('st.agentOldTitle', { dev: ag.device || tr('st.yourPc'), a: stripV(ag.version), s: stripV(s.version) }), tr('st.agentOldText', { url: RELEASES_URL }), true));
+      }
     } else if (s) {
       if (s.in_match && s.live) { pill.className = 'pill pill-live'; label.textContent = tr('st.inMatch'); }
       else if (s.connected) { pill.className = 'pill pill-ok'; label.textContent = tr('st.connected'); pill.title = tr('st.transport', { v: s.transport === 'tcp' ? 'TCP' : s.transport === 'ws' ? 'WebSocket' : '—' }); }
@@ -2390,6 +2393,9 @@
         w.push(warning('!', tr('st.apiOff'), tr('st.apiOffText', { v: esc(ini.packet_send_rate), path: esc(ini.path || 'DefaultStatsAPI.ini') })));
       } else if (!s.connected) {
         w.push(warning('i', tr('st.waitingTitle'), tr('st.waitingText'), true));
+      }
+      if (s.update && s.update.version) {
+        w.push(warning('i', tr('st.updateTitle', { v: s.update.version }), tr('st.updateText', { cur: esc(stripV(s.version)), url: esc(s.update.url || RELEASES_URL) }), true));
       }
     }
     $('#warnings').innerHTML = w.join('');
@@ -2412,6 +2418,17 @@
       live.hidden = true;
       live.innerHTML = '';
     }
+  }
+  var RELEASES_URL = 'https://github.com/KcivazB/rocket-tracker/releases/latest';
+  function stripV(v) { return String(v || '').replace(/^v/, ''); }
+  // versionBelow: a and b are x.y.z (optional "v"); false when either is not.
+  function versionBelow(a, b) {
+    var pa = stripV(a).split('.'), pb = stripV(b).split('.');
+    if (pa.length !== 3 || pb.length !== 3 || pa.concat(pb).some(function (x) { return !/^\d+$/.test(x); })) return false;
+    for (var i = 0; i < 3; i++) {
+      if (+pa[i] !== +pb[i]) return +pa[i] < +pb[i];
+    }
+    return false;
   }
   function warning(icon, title, body, info) {
     return '<div class="warning' + (info ? ' info' : '') + '"><span class="w-icon">' + icon + '</span><div><strong>' + esc(title) + '</strong><p>' + body + '</p></div></div>';

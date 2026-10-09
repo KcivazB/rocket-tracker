@@ -96,6 +96,9 @@ var messages = map[string][2]string{
 	"setup.startFailed":     {"Impossible de lancer le tracker : %v", "Could not start the tracker: %v"},
 	"setup.dashboard":       {"Tableau de bord : %s", "Dashboard: %s"},
 	"error.box":             {"Erreur : %s", "Error: %s"},
+	"tray.open":             {"Ouvrir le tableau de bord", "Open the dashboard"},
+	"tray.update":           {"Mise à jour disponible : v%s", "Update available: v%s"},
+	"tray.quit":             {"Quitter Rocket Tracker", "Quit Rocket Tracker"},
 	"uninstall.done":        {"Démarrage automatique supprimé. Les données sont conservées dans %s", "Autostart removed. Your data is kept in %s"},
 
 	"agent.title":        {"Rocket Tracker — agent", "Rocket Tracker — agent"},

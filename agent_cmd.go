@@ -112,6 +112,8 @@ func cmdAgentRun(args []string, console bool) error {
 	client := gameClient(log, tr, cfg.RLInstallDir, rlPort, g.rlPort > 0)
 	a.ConnStatus = client.Status
 	waitClient := runGameClient(ctx, stop, log, client)
+	_, stopTray := startTray(ctx, stop, log, cfg.Server)
+	defer stopTray()
 
 	log.Info("rocket tracker agent started", "version", Version, "server", cfg.Server, "data_dir", dataDir, "rl_port", client.Port)
 	a.Run(ctx)
