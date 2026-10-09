@@ -113,7 +113,12 @@ func cmdAgentRun(args []string, console bool) error {
 		Identity:       a.Identity,
 		OnAutoIdentity: a.OnAutoIdentity,
 		DefaultTag:     a.DefaultTag,
-		Save:           a.Save,
+		Save: func(m *store.Match) error {
+			if desk != nil {
+				desk.MatchSaved(m)
+			}
+			return a.Save(m)
+		},
 	})
 	a.Tracker = tr
 	client := gameClient(log, tr, cfg.RLInstallDir, rlPort, g.rlPort > 0)

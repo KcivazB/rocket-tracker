@@ -475,3 +475,29 @@ func TestHubSharedMatches(t *testing.T) {
 		t.Fatalf("someone else's match id: %d", code)
 	}
 }
+
+func TestHubRanksReadOnlyForOthers(t *testing.T) {
+	e := newHub(t, nil)
+	alice, bob := e.devLogin(t, "Alice"), e.devLogin(t, "Bob")
+	base := e.ts.URL
+	code, body := call(t, alice, "POST", base+"/api/ranks", `{"playlist":"2v2","tier":19,"division":1}`)
+	if code != 201 {
+		t.Fatalf("add %d %s", code, body)
+	}
+	var rk struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal([]byte(body), &rk)
+	if code, body := call(t, bob, "GET", base+"/api/players/alice/ranks", ""); code != 200 || !strings.Contains(body, `"tier":19`) {
+		t.Fatalf("bob reads alice %d %s", code, body)
+	}
+	if code, _ := call(t, bob, "GET", base+"/api/ranks", ""); code != 200 {
+		t.Fatalf("bob's own %d", code)
+	}
+	if code, _ := call(t, bob, "DELETE", fmt.Sprintf("%s/api/ranks/%d", base, rk.ID), ""); code != 404 {
+		t.Fatalf("bob deleted alice's rank: %d", code)
+	}
+	if code, _ := call(t, bob, "POST", base+"/api/players/alice/ranks", `{"playlist":"2v2","mmr":1}`); code == 201 {
+		t.Fatal("bob wrote to alice's ranks")
+	}
+}

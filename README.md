@@ -30,6 +30,12 @@ and **Install the vX update** when a newer release is published on GitHub (check
 the local dashboard shows it too, with an **Install and restart** button). The update downloads the new
 `rltracker.exe`, checks it, replaces the running one and restarts; if it fails, the release page opens instead.
 
+**Rank & MMR.** The Stats API gives neither, so you note them: **Note my rank** on the dashboard (rank with
+tier and division, MMR, or both, per playlist). The dashboard shows your current rank per playlist with its
+badge, the MMR change, and the MMR curve. When a session ends (30 minutes after the last match), the tray icon
+reminds you and the dashboard offers to note the playlists you just played, prefilled with your last entry.
+The badges are drawn by Rocket Tracker, not Psyonix's emblems.
+
 **Met before.** During a match, the live banner lists the players you already faced or played with, with
 your record against / alongside them (online matches, matched by platform id; bots are ignored).
 

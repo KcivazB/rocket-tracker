@@ -974,6 +974,8 @@
     all: [],
     filtered: [],
     shared: {},       // server mode: match id -> other accounts that recorded it
+    ranks: [],        // rank / MMR entries of the viewed player, oldest first
+    rankPl: null,     // playlist shown in the MMR chart
     sharedCopies: {}, // apiBase/id -> their records of that match (match page)
     filters: loadFilters(),
     status: null,
@@ -1291,6 +1293,293 @@
   function fmtDay(t, o) { return new Date(t).toLocaleDateString(L(), o); }
   function hasData(arr) { return arr.some(function (v) { return v != null; }); }
   function wlShort(w, l) { return tr('wl.short', { w: w, l: l }); }
+
+  /* ---------- ranks & MMR (noted by the player) ---------- */
+  // tier: 0 unranked, 1-21 Bronze I .. Grand Champion III, 22 Supersonic Legend; division 1-4.
+  var PLAYLISTS = ['1v1', '2v2', '3v3', 'hoops', 'rumble', 'dropshot', 'snowday', 'tournament'];
+  var RANK_FAMILIES = [
+    { k: 'unranked', c1: '#b4bcc6', c2: '#5d6670', shape: 'shield' },
+    { k: 'bronze', c1: '#e3a571', c2: '#7a4622', shape: 'shield' },
+    { k: 'silver', c1: '#f1f4f8', c2: '#848f9c', shape: 'shield' },
+    { k: 'gold', c1: '#ffe28c', c2: '#ad7a12', shape: 'shield' },
+    { k: 'platinum', c1: '#b9f4f7', c2: '#2f97a6', shape: 'gem' },
+    { k: 'diamond', c1: '#acd0ff', c2: '#2853c4', shape: 'gem' },
+    { k: 'champion', c1: '#e0c8ff', c2: '#6630c0', shape: 'hex' },
+    { k: 'gc', c1: '#ffa0a0', c2: '#ad1b28', shape: 'crown' },
+    { k: 'ssl', c1: '#ffffff', c2: '#9ba7ba', shape: 'star' }
+  ];
+  var ROMAN = ['I', 'II', 'III', 'IV'];
+  function rankFamily(tier) { return tier === 0 ? 0 : tier === 22 ? 8 : Math.ceil(tier / 3); }
+  function rankLevel(tier) { return tier >= 1 && tier <= 21 ? (tier - 1) % 3 + 1 : 0; }
+  function rankName(tier) {
+    if (!isNum(tier)) return '';
+    var lv = rankLevel(tier);
+    return tr('rank.f.' + RANK_FAMILIES[rankFamily(tier)].k) + (lv ? ' ' + ROMAN[lv - 1] : '');
+  }
+  function rankFull(r) {
+    if (!isNum(r.tier)) return '';
+    return rankName(r.tier) + (isNum(r.division) ? ' · ' + tr('rank.div', { v: ROMAN[r.division - 1] }) : '');
+  }
+  function playlistLabel(p) { return tr('pl.' + p); }
+  var rankSvgSeq = 0;
+  /** Our own badge for a tier (not Psyonix's emblems): family colour and shape, one chevron per level. */
+  function rankIcon(tier, size) {
+    size = size || 40;
+    if (!isNum(tier)) {
+      return '<svg class="rank-icon" width="' + size + '" height="' + size + '" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="15" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="2" stroke-dasharray="4 3"/></svg>';
+    }
+    var f = RANK_FAMILIES[rankFamily(tier)], id = 'rkg' + (++rankSvgSeq), lv = rankLevel(tier);
+    var shapes = {
+      shield: 'M20 3 L34 8 V19 C34 28 27 34 20 37 C13 34 6 28 6 19 V8 Z',
+      gem: 'M20 2 L36 15 L20 38 L4 15 Z',
+      hex: 'M20 3 L35 11 V29 L20 37 L5 29 V11 Z',
+      crown: 'M20 6 L35 13 V29 L20 37 L5 29 V13 Z',
+      star: (function () {
+        var pts = [];
+        for (var i = 0; i < 16; i++) {
+          var a = -Math.PI / 2 + i * Math.PI / 8, r = i % 2 ? 9 : 18;
+          pts.push((20 + r * Math.cos(a)).toFixed(1) + ' ' + (20 + r * Math.sin(a)).toFixed(1));
+        }
+        return 'M' + pts.join(' L') + ' Z';
+      })()
+    };
+    var svg = '<svg class="rank-icon" width="' + size + '" height="' + size + '" viewBox="0 0 40 40" role="img" aria-label="' + esc(rankName(tier)) + '">' +
+      '<defs><linearGradient id="' + id + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + f.c1 + '"/><stop offset="1" stop-color="' + f.c2 + '"/></linearGradient></defs>' +
+      '<path d="' + shapes[f.shape] + '" fill="url(#' + id + ')" stroke="' + f.c2 + '" stroke-width="1.2" stroke-linejoin="round"/>';
+    if (f.shape === 'gem') svg += '<path d="M4 15 H36 M12 15 L20 2 L28 15 M12 15 L20 38 L28 15" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="1"/>';
+    if (f.shape === 'crown') svg += '<path d="M11 9 L13.5 2.5 L17 6 L20 1 L23 6 L26.5 2.5 L29 9 Z" fill="' + f.c1 + '" stroke="' + f.c2 + '" stroke-width="1" stroke-linejoin="round"/>';
+    if (f.k === 'unranked') svg += '<path d="M15 21 H25" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/>';
+    var ys = lv === 1 ? [23] : lv === 2 ? [20, 26] : lv === 3 ? [17, 23, 29] : [];
+    ys.forEach(function (y) {
+      svg += '<path d="M14 ' + (y + 2) + ' L20 ' + (y - 3) + ' L26 ' + (y + 2) + '" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>';
+    });
+    return svg + '</svg>';
+  }
+  function divisionPips(div) {
+    if (!isNum(div)) return '';
+    var h = '<span class="rank-pips" title="' + esc(tr('rank.div', { v: ROMAN[div - 1] })) + '">';
+    for (var i = 1; i <= 4; i++) h += '<i' + (i <= div ? ' class="on"' : '') + '></i>';
+    return h + '</span>';
+  }
+  function annotateRanks(rs) {
+    return rs.map(function (r) { r._t = Date.parse(r.at); return r; }).sort(function (a, b) { return a._t - b._t || a.id - b.id; });
+  }
+  /** Latest entry per playlist, plus the latest one before it with an MMR (for the delta). */
+  function rankSummary(rs) {
+    var by = {};
+    rs.forEach(function (r) {
+      var s = by[r.playlist] || (by[r.playlist] = { playlist: r.playlist, last: null, tier: null, division: null, mmr: null, prevMmr: null, mmrAt: null, n: 0 });
+      s.n++;
+      s.last = r;
+      if (isNum(r.tier)) { s.tier = r.tier; s.division = isNum(r.division) ? r.division : null; s.tierAt = r._t; }
+      if (isNum(r.mmr)) { s.prevMmr = s.mmr; s.mmr = r.mmr; s.mmrAt = r._t; }
+    });
+    return PLAYLISTS.filter(function (p) { return by[p]; }).map(function (p) { return by[p]; });
+  }
+  function renderRanks() {
+    var sec = $('#rank-section');
+    if (!sec) return;
+    var own = !readOnly();
+    var rs = state.ranks || [];
+    sec.hidden = !state.loaded || (!rs.length && !own);
+    if (sec.hidden) return;
+    $('#rank-add').hidden = !own;
+    renderRankPrompt();
+    var sum = rankSummary(rs);
+    $('#rank-cards').innerHTML = sum.length ? sum.map(function (s) {
+      var delta = isNum(s.mmr) && isNum(s.prevMmr) ? s.mmr - s.prevMmr : null;
+      return '<div class="card rank-card">' + rankIcon(s.tier, 56) +
+        '<div class="rank-card-body"><span class="kpi-label">' + esc(playlistLabel(s.playlist)) + '</span>' +
+        '<span class="rank-card-name">' + (isNum(s.tier) ? esc(rankName(s.tier)) + divisionPips(s.division) : '<span class="muted">' + tr('rank.noRank') + '</span>') + '</span>' +
+        '<span class="rank-card-mmr">' + (isNum(s.mmr) ? '<b class="num">' + fmtNum(s.mmr) + '</b> MMR' +
+          (delta != null ? ' <span class="' + signCls(delta) + '">' + (delta > 0 ? '▲ ' : delta < 0 ? '▼ ' : '') + fmtSigned(delta) + '</span>' : '') : '<span class="muted">' + tr('rank.noMmr') + '</span>') + '</span>' +
+        '<span class="kpi-sub">' + tr('rank.notedOn', { v: esc(fmtDate(s.last._t, true)) }) + '</span></div></div>';
+    }).join('') : '<div class="card rank-empty"><p>' + tr('rank.empty') + '</p></div>';
+    renderMmrChart(sum);
+    var log = $('#rank-log'), box = $('#rank-log-box');
+    box.hidden = !rs.length;
+    log.innerHTML = rs.slice().reverse().map(function (r) {
+      return '<li><span class="rank-log-when">' + esc(fmtDate(r._t, true)) + '</span><span class="rank-log-pl">' + esc(playlistLabel(r.playlist)) + '</span>' +
+        '<span class="rank-log-what">' + (isNum(r.tier) ? rankIcon(r.tier, 22) + esc(rankFull(r)) : '') + (isNum(r.mmr) ? (isNum(r.tier) ? ' · ' : '') + fmtNum(r.mmr) + ' MMR' : '') + '</span>' +
+        (own ? '<button type="button" class="del-btn" data-rank-del="' + r.id + '" title="' + esc(tr('tbl.delete')) + '" aria-label="' + esc(tr('tbl.delete')) + '">' + TRASH + '</button>' : '') + '</li>';
+    }).join('');
+  }
+  function renderMmrChart(sum) {
+    var withMmr = sum.filter(function (s) { return isNum(s.mmr); }).map(function (s) { return s.playlist; });
+    var card = $('#rank-chart-card');
+    card.hidden = !withMmr.length;
+    if (!withMmr.length) { if (charts['c-mmr']) { charts['c-mmr'].destroy(); delete charts['c-mmr']; } return; }
+    if (withMmr.indexOf(state.rankPl) < 0) {
+      // Default: the playlist noted most recently.
+      var last = (state.ranks || []).filter(function (r) { return isNum(r.mmr); }).pop();
+      state.rankPl = last ? last.playlist : withMmr[0];
+    }
+    $('#rank-pl').innerHTML = withMmr.map(function (p) {
+      return '<button type="button" role="radio" data-rank-pl="' + p + '" aria-checked="' + (p === state.rankPl) + '">' + esc(playlistLabel(p)) + '</button>';
+    }).join('');
+    var pts = state.ranks.filter(function (r) { return r.playlist === state.rankPl && isNum(r.mmr); });
+    makeChart('c-mmr', {
+      type: 'line',
+      data: { datasets: [{ label: 'MMR', data: pts.map(function (r) { return { x: r._t, y: r.mmr }; }), borderColor: T.us, backgroundColor: alpha(T.us, 0.10),
+        fill: 'origin', borderWidth: 2, pointRadius: pts.length > 40 ? 0 : 4, pointHoverRadius: 5, pointBackgroundColor: T.us, pointBorderColor: T.surface, pointBorderWidth: 2,
+        pointHoverBackgroundColor: T.us, pointHoverBorderColor: T.surface, tension: 0.25, cubicInterpolationMode: 'monotone' }] },
+      options: {
+        parsing: false,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        scales: baseScales({
+          x: { type: 'linear', ticks: { color: T.muted, maxTicksLimit: 6, callback: function (v) { return fmtDay(v, { day: 'numeric', month: 'short' }); } } },
+          y: { grace: '8%', ticks: { color: T.muted, padding: 8, maxTicksLimit: 6, callback: function (v) { return fmtNum(v); } } }
+        }),
+        plugins: {
+          crosshair: { enabled: true },
+          tooltip: { displayColors: false, callbacks: {
+            title: function (it) { return fmtDate(pts[it[0].dataIndex]._t, true); },
+            label: function (it) { var r = pts[it.dataIndex]; return fmtNum(r.mmr) + ' MMR' + (isNum(r.tier) ? ' · ' + rankFull(r) : ''); }
+          } }
+        }
+      }
+    }, pts.length >= 2 ? null : tr('rank.chartNotEnough'));
+  }
+  /** Playlist of a ranked-looking match ('' when it cannot be told). */
+  function matchPlaylist(m) {
+    if (!m.online || (m.tag !== 'ranked' && m.tag !== 'tournament')) return '';
+    if (m.tag === 'tournament') return 'tournament';
+    if (m.variant === 'Hoops') return 'hoops';
+    if (m.variant === 'Dropshot') return 'dropshot';
+    return ['1v1', '2v2', '3v3'].indexOf(m.mode) >= 0 ? m.mode : '';
+  }
+  /** The session that just ended (30 min without a match, less than 12 h ago) and its playlists without an entry since. */
+  function endedSession() {
+    var ms = state.all.filter(function (m) { return m.result !== 'abandoned' && matchPlaylist(m); });
+    if (!ms.length) return null;
+    var lastEnd = endMs(ms[ms.length - 1]), now = Date.now();
+    if (now - lastEnd < SESSION_GAP_MS || now - lastEnd > 12 * 3600 * 1000) return null;
+    var i = ms.length - 1;
+    while (i > 0 && ms[i]._t - endMs(ms[i - 1]) <= SESSION_GAP_MS) i--;
+    var start = ms[i]._t, count = {};
+    ms.slice(i).forEach(function (m) { var p = matchPlaylist(m); count[p] = (count[p] || 0) + 1; });
+    var noted = {};
+    (state.ranks || []).forEach(function (r) { if (r._t >= start) noted[r.playlist] = true; });
+    var todo = PLAYLISTS.filter(function (p) { return count[p] && !noted[p]; });
+    return todo.length ? { start: start, todo: todo, count: count } : null;
+  }
+  function renderRankPrompt() {
+    var box = $('#rank-prompt');
+    var s = readOnly() ? null : endedSession();
+    var key = s ? 'rt.rankPrompt.' + s.start : '';
+    var dismissed = false;
+    try { dismissed = !!(key && localStorage.getItem(key)); } catch (e) { /* storage unavailable */ }
+    if (!s || dismissed) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="warning info rank-prompt"><span class="w-icon">★</span><div><strong>' + tr('rank.promptTitle') + '</strong>' +
+      '<p>' + tr('rank.promptText') + '</p><p class="w-actions">' + s.todo.map(function (p) {
+        return '<button type="button" class="btn" data-rank-for="' + p + '">' + esc(playlistLabel(p)) + ' <small class="muted">' + plural(s.count[p], 'match') + '</small></button>';
+      }).join(' ') + ' <button type="button" class="btn btn-ghost" data-rank-dismiss="' + esc(key) + '">' + tr('rank.promptLater') + '</button></p></div></div>';
+  }
+
+  /* rank dialog */
+  var rankForm = { tier: null, family: null, level: 1, division: null };
+  function openRankDialog(playlist) {
+    var dlg = $('#rank-dialog'), f = $('#rank-form');
+    var pl = playlist || state.rankPl || '2v2';
+    f.elements.playlist.innerHTML = PLAYLISTS.map(function (p) { return '<option value="' + p + '"' + (p === pl ? ' selected' : '') + '>' + esc(playlistLabel(p)) + '</option>'; }).join('');
+    prefillRank(pl);
+    $('#rank-msg').textContent = '';
+    if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+  }
+  /** Starts from the last entry of the playlist: usually only the division or the MMR changed. */
+  function prefillRank(pl) {
+    var s = rankSummary(state.ranks || []).filter(function (x) { return x.playlist === pl; })[0];
+    var tier = s && isNum(s.tier) ? s.tier : null;
+    rankForm = { family: tier == null ? null : rankFamily(tier), level: tier == null ? 1 : rankLevel(tier) || 1, division: s && isNum(s.division) ? s.division : null };
+    $('#rank-form').elements.mmr.value = s && isNum(s.mmr) ? s.mmr : '';
+    renderRankPicker();
+  }
+  function formTier() {
+    var f = rankForm.family;
+    if (f == null) return null;
+    return f === 0 ? 0 : f === 8 ? 22 : (f - 1) * 3 + rankForm.level;
+  }
+  function renderRankPicker() {
+    $('#rank-families').innerHTML = RANK_FAMILIES.map(function (fam, i) {
+      var sample = i === 0 ? 0 : i === 8 ? 22 : (i - 1) * 3 + (rankForm.family === i ? rankForm.level : 1);
+      return '<button type="button" role="radio" aria-checked="' + (rankForm.family === i) + '" data-rank-family="' + i + '" title="' + esc(tr('rank.f.' + fam.k)) + '">' +
+        rankIcon(sample, 34) + '<span>' + esc(tr('rank.f.' + fam.k)) + '</span></button>';
+    }).join('');
+    var hasLevels = rankForm.family != null && rankForm.family >= 1 && rankForm.family <= 7;
+    $('#rank-sub').hidden = !hasLevels;
+    $('#rank-level').innerHTML = [1, 2, 3].map(function (l) {
+      return '<button type="button" role="radio" data-rank-level="' + l + '" aria-checked="' + (rankForm.level === l) + '">' + ROMAN[l - 1] + '</button>';
+    }).join('');
+    $('#rank-division').innerHTML = '<button type="button" role="radio" data-rank-div="" aria-checked="' + (rankForm.division == null) + '">' + tr('rank.divUnknown') + '</button>' +
+      [1, 2, 3, 4].map(function (d) {
+        return '<button type="button" role="radio" data-rank-div="' + d + '" aria-checked="' + (rankForm.division === d) + '">' + tr('rank.div', { v: ROMAN[d - 1] }) + '</button>';
+      }).join('');
+    var t = formTier();
+    $('#rank-preview').innerHTML = t == null ? '<span class="muted">' + tr('rank.pickHint') + '</span>' :
+      rankIcon(t, 28) + ' <b>' + esc(rankFull({ tier: t, division: hasLevels ? rankForm.division : null })) + '</b> <button type="button" class="linklike" data-rank-clear>' + tr('rank.clear') + '</button>';
+  }
+  function saveRank(e) {
+    e.preventDefault();
+    var f = $('#rank-form'), msg = $('#rank-msg');
+    var tier = formTier(), mmrTxt = f.elements.mmr.value.trim();
+    var mmr = mmrTxt === '' ? null : parseInt(mmrTxt, 10);
+    if (tier == null && mmr == null) { msg.textContent = tr('rank.needOne'); msg.className = 'form-msg err'; return; }
+    var hasDiv = tier != null && tier >= 1 && tier <= 21 && rankForm.division != null;
+    var body = { playlist: f.elements.playlist.value, tier: tier, division: hasDiv ? rankForm.division : null, mmr: mmr };
+    msg.textContent = tr('common.saving'); msg.className = 'form-msg';
+    if (MOCK) { body.id = Date.now(); body.at = new Date().toISOString(); state.ranks = annotateRanks(state.ranks.concat([body])); closeRank(); return; }
+    apiFetch('/api/ranks', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+      state.ranks = annotateRanks(state.ranks.concat([r]));
+      state.rankPl = isNum(r.mmr) ? r.playlist : state.rankPl;
+      closeRank();
+      toast(tr('rank.saved'));
+    }).catch(function (err) { msg.textContent = tr('toast.saveFailed', { v: err.message }); msg.className = 'form-msg err'; });
+  }
+  function closeRank() {
+    var dlg = $('#rank-dialog');
+    if (dlg.close) dlg.close(); else dlg.removeAttribute('open');
+    renderRanks();
+  }
+  function deleteRank(id) {
+    if (!window.confirm(tr('rank.confirmDelete'))) return;
+    var done = function () { state.ranks = state.ranks.filter(function (r) { return r.id !== id; }); renderRanks(); };
+    if (MOCK) { done(); return; }
+    apiFetch('/api/ranks/' + id, { method: 'DELETE' }).then(done).catch(function (e) { toast(tr('toast.deleteFailed', { v: e.message }), true); });
+  }
+  function bindRanks() {
+    $('#rank-add').addEventListener('click', function () { openRankDialog(); });
+    $('#rank-section').addEventListener('click', function (e) {
+      var b;
+      if ((b = e.target.closest('[data-rank-pl]'))) { state.rankPl = b.getAttribute('data-rank-pl'); renderRanks(); }
+      else if ((b = e.target.closest('[data-rank-for]'))) openRankDialog(b.getAttribute('data-rank-for'));
+      else if ((b = e.target.closest('[data-rank-dismiss]'))) { try { localStorage.setItem(b.getAttribute('data-rank-dismiss'), '1'); } catch (x) { /* storage unavailable */ } renderRanks(); }
+      else if ((b = e.target.closest('[data-rank-del]'))) deleteRank(+b.getAttribute('data-rank-del'));
+    });
+    var dlg = $('#rank-dialog'), form = $('#rank-form');
+    $$('[data-close]', dlg).forEach(function (b) { b.addEventListener('click', function () { dlg.close ? dlg.close() : dlg.removeAttribute('open'); }); });
+    form.elements.playlist.addEventListener('change', function () { prefillRank(form.elements.playlist.value); });
+    form.addEventListener('click', function (e) {
+      var b;
+      if ((b = e.target.closest('[data-rank-family]'))) { rankForm.family = +b.getAttribute('data-rank-family'); if (rankForm.family === 0 || rankForm.family === 8) rankForm.division = null; }
+      else if ((b = e.target.closest('[data-rank-level]'))) rankForm.level = +b.getAttribute('data-rank-level');
+      else if ((b = e.target.closest('[data-rank-div]'))) { var v = b.getAttribute('data-rank-div'); rankForm.division = v ? +v : null; }
+      else if (e.target.closest('[data-rank-clear]')) { rankForm.family = null; rankForm.division = null; }
+      else return;
+      renderRankPicker();
+    });
+    form.addEventListener('submit', saveRank);
+  }
+  /** Demo mode: a few weeks of 2v2 and 1v1 entries. */
+  function mockRanks() {
+    var out = [], now = Date.now(), mmr2 = 1010, mmr1 = 830;
+    for (var i = 20; i >= 0; i--) {
+      mmr2 += Math.round(Math.sin(i * 1.3) * 14 + 4);
+      out.push({ id: 100 + i, at: new Date(now - i * 2.5 * 86400000).toISOString(), playlist: '2v2', tier: 14, division: Math.min(4, Math.max(1, Math.round((mmr2 - 1000) / 12) + 2)), mmr: mmr2 });
+      if (i % 3 === 0) { mmr1 += Math.round(Math.cos(i) * 18); out.push({ id: 200 + i, at: new Date(now - i * 2.5 * 86400000 - 3600000).toISOString(), playlist: '1v1', tier: 12, division: 2, mmr: mmr1 }); }
+    }
+    out.push({ id: 300, at: new Date(now - 40 * 86400000).toISOString(), playlist: '3v3', tier: 13, division: null, mmr: null });
+    return annotateRanks(out);
+  }
 
   /* ---------- render: season goal ---------- */
   function goalModeLabel(mode) { return mode === 'all' ? tr('goal.allModes') : mode; }
@@ -2649,7 +2938,8 @@
     $('#onboarding').hidden = has || !state.loaded;
     // The season goal (and manual entry) is available even before the first tracked match.
     $('#dashboard').hidden = !state.loaded;
-    $$('#dashboard > :not(#goal-section)').forEach(function (el) { if (!has) el.hidden = true; else if (el.id !== 'no-results' && el.id !== 'content') el.hidden = false; });
+    renderRanks();
+    $$('#dashboard > :not(#goal-section):not(#rank-section)').forEach(function (el) { if (!has) el.hidden = true; else if (el.id !== 'no-results' && el.id !== 'content') el.hidden = false; });
     try { renderGoal(); } catch (e) { console.error('render failed: renderGoal', e); }
     if (!has) { Object.keys(charts).forEach(function (k) { charts[k].destroy(); delete charts[k]; }); return; }
     syncFilterUi();
@@ -2683,9 +2973,19 @@
       renderAll();
     }).catch(function (e) { console.warn('shared', e); });
   }
+  function loadRanks() {
+    var gen = state.gen;
+    if (MOCK) { state.ranks = mockRanks(); return Promise.resolve(); }
+    return apiFetch(apiBase() + '/ranks').then(function (rs) {
+      if (gen !== state.gen) return;
+      state.ranks = annotateRanks(Array.isArray(rs) ? rs : []);
+      renderRanks();
+    }).catch(function (e) { console.warn('ranks', e); });
+  }
   function loadMatches() {
     var gen = state.gen;
     loadShared();
+    loadRanks();
     return apiFetch(apiBase() + '/matches').then(function (data) {
       if (gen !== state.gen) return;
       state.all = annotate(Array.isArray(data) ? data : []);
@@ -3252,6 +3552,7 @@
     applyChartDefaults();
     bindPlayers();
     bindDevices();
+    bindRanks();
     apiFetch('/api/session').catch(function () { return { mode: 'local' }; }).then(function (s) {
       state.mode = s && s.mode === 'server' ? 'server' : 'local';
       state.me = (s && s.user) || null;

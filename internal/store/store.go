@@ -119,6 +119,16 @@ var migrations = []string{
 		last_seen_at TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);`,
+	`CREATE TABLE IF NOT EXISTS ranks (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL DEFAULT 0,
+		at         TEXT NOT NULL,
+		playlist   TEXT NOT NULL,
+		tier       INTEGER NOT NULL DEFAULT -1,
+		division   INTEGER NOT NULL DEFAULT 0,
+		mmr        INTEGER NOT NULL DEFAULT -1
+	);
+	CREATE INDEX IF NOT EXISTS idx_ranks_user_at ON ranks(user_id, at);`,
 }
 
 // Open opens (and creates / migrates) the database at path.

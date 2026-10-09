@@ -104,6 +104,21 @@
         <div class="cal-grid" id="goal-cal"></div>
       </section>
 
+      <!-- Rank & MMR noted by the player (independent of the filters below) -->
+      <section class="section rank-section" aria-labelledby="h-rank" id="rank-section" hidden>
+        <div class="section-head">
+          <h2 id="h-rank" data-i18n="rank.title">Rang &amp; MMR</h2>
+          <p class="section-sub"><button type="button" class="btn btn-ghost" id="rank-add" data-i18n="rank.add">Noter mon rang</button></p>
+        </div>
+        <div id="rank-prompt"></div>
+        <div class="rank-cards" id="rank-cards"></div>
+        <figure class="card chart-card" id="rank-chart-card" hidden>
+          <figcaption><span class="card-title" data-i18n="rank.mmrTitle">MMR</span><div class="seg" id="rank-pl" role="radiogroup" data-i18n-attr="aria-label:rank.playlist"></div></figcaption>
+          <div class="chart-box"><canvas id="c-mmr"></canvas></div>
+        </figure>
+        <details class="rank-log" id="rank-log-box" hidden><summary data-i18n="rank.log">Toutes les saisies</summary><ul id="rank-log"></ul></details>
+      </section>
+
       <!-- Filters -->
       <section class="filters" data-i18n-attr="aria-label:ui.filters">
         <div class="filter-group">
@@ -478,6 +493,40 @@
       <footer class="modal-foot">
         <button type="button" class="btn btn-ghost" data-close data-i18n="common.cancel">Annuler</button>
         <button type="submit" class="btn btn-primary" id="settings-save" data-i18n="common.save">Enregistrer</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="rank-dialog" class="modal">
+    <form method="dialog" id="rank-form">
+      <header class="modal-head">
+        <h2 data-i18n="rank.dialogTitle">Noter mon rang</h2>
+        <button type="button" class="icon-btn" data-close data-i18n-attr="aria-label:common.close">×</button>
+      </header>
+      <div class="modal-body">
+        <label class="field">
+          <span data-i18n="rank.playlist">Playlist</span>
+          <select name="playlist" class="select" id="rank-playlist"></select>
+        </label>
+        <fieldset class="field-group">
+          <legend data-i18n="rank.rank">Rang</legend>
+          <div class="rank-picker" id="rank-families" role="radiogroup" data-i18n-attr="aria-label:rank.rank"></div>
+          <div class="rank-sub" id="rank-sub">
+            <div class="seg" id="rank-level" role="radiogroup" data-i18n-attr="aria-label:rank.level"></div>
+            <div class="seg" id="rank-division" role="radiogroup" data-i18n-attr="aria-label:rank.division"></div>
+          </div>
+          <p class="rank-preview" id="rank-preview"></p>
+        </fieldset>
+        <label class="field">
+          <span data-i18n="rank.mmr">MMR</span>
+          <input type="number" name="mmr" min="0" max="5000" step="1" inputmode="numeric" data-i18n-attr="placeholder:rank.mmrPh">
+          <small data-i18n="rank.help">Rang, MMR ou les deux : visibles dans le jeu (onglet Compétitif) ou sur votre profil tracker.</small>
+        </label>
+        <p class="form-msg" id="rank-msg" role="status"></p>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-close data-i18n="common.cancel">Annuler</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Enregistrer</button>
       </footer>
     </form>
   </dialog>

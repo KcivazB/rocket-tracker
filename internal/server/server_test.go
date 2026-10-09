@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -266,4 +267,31 @@ func TestInstallUpdate(t *testing.T) {
 		t.Fatalf("local: %d, installed %d", code, installed)
 	}
 	<-restarted
+}
+
+func TestRanksAPI(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, body := do(t, "POST", ts.URL+"/api/ranks", `{"playlist":"2v2","tier":14,"division":3,"mmr":1032}`)
+	if resp.StatusCode != 201 || !strings.Contains(body, `"tier":14`) || !strings.Contains(body, `"mmr":1032`) {
+		t.Fatalf("add %d %s", resp.StatusCode, body)
+	}
+	if resp, body := do(t, "POST", ts.URL+"/api/ranks", `{"playlist":"1v1","mmr":845}`); resp.StatusCode != 201 || !strings.Contains(body, `"tier":null`) {
+		t.Fatalf("mmr only %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := do(t, "POST", ts.URL+"/api/ranks", `{"playlist":"1v1"}`); resp.StatusCode != 400 {
+		t.Fatalf("empty entry accepted: %d", resp.StatusCode)
+	}
+	resp, body = do(t, "GET", ts.URL+"/api/ranks", "")
+	var rs []struct {
+		ID int64 `json:"id"`
+	}
+	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &rs) != nil || len(rs) != 2 {
+		t.Fatalf("list %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := do(t, "DELETE", fmt.Sprintf("%s/api/ranks/%d", ts.URL, rs[0].ID), ""); resp.StatusCode != 204 {
+		t.Fatalf("delete %d", resp.StatusCode)
+	}
+	if resp, _ := do(t, "DELETE", fmt.Sprintf("%s/api/ranks/%d", ts.URL, rs[0].ID), ""); resp.StatusCode != 404 {
+		t.Fatalf("delete twice %d", resp.StatusCode)
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"rocket-tracker/internal/i18n"
+	"rocket-tracker/internal/store"
 	"rocket-tracker/internal/tilt"
 	"rocket-tracker/internal/tray"
 	"rocket-tracker/internal/update"
@@ -32,6 +33,7 @@ type desktop struct {
 
 	mu         sync.Mutex
 	installing bool
+	sessionEnd *time.Timer // rank reminder, reset by each online match
 }
 
 // startDesktop shows the notification-area icon (open, update, quit) and
@@ -186,4 +188,22 @@ func tiltMessage(a *tilt.Alert) (title, text string) {
 		text = i18n.Tf(lang, "tilt.streakOK", a.Losses, pct(a.WinRate), pct(a.Baseline))
 	}
 	return title, text
+}
+
+// MatchSaved restarts the end-of-session timer: tilt.SessionGap after the
+// last online match, a notification suggests noting the rank or MMR.
+func (d *desktop) MatchSaved(m *store.Match) {
+	if m == nil || !m.Online || m.Result == "abandoned" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.sessionEnd != nil {
+		d.sessionEnd.Stop()
+	}
+	d.sessionEnd = time.AfterFunc(tilt.SessionGap, func() {
+		if err := d.tray.Notify(i18n.T(lang, "rank.reminderTitle"), i18n.T(lang, "rank.reminderText")); err != nil {
+			d.log.Warn("cannot show the notification", "err", err)
+		}
+	})
 }

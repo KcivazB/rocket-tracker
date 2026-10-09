@@ -118,6 +118,8 @@ var messages = map[string][2]string{
 	"discord.testText":      {"Les temps forts de %s arriveront ici.", "%s's highlights will show up here."},
 	"discord.weeklyTitle":   {"🏆 Classement de la semaine", "🏆 Leaderboard of the week"},
 	"discord.weeklyLine":    {"%d %% (%dV-%dD), diff %s/match", "%d%% (%dW-%dL), diff %s/match"},
+	"rank.reminderTitle":    {"Session terminée", "Session over"},
+	"rank.reminderText":     {"Notez votre rang ou votre MMR : icône Rocket Tracker → Ouvrir le tableau de bord.", "Note your rank or MMR: Rocket Tracker icon → Open the dashboard."},
 	"uninstall.done":        {"Démarrage automatique supprimé. Les données sont conservées dans %s", "Autostart removed. Your data is kept in %s"},
 
 	"agent.title":        {"Rocket Tracker — agent", "Rocket Tracker — agent"},

@@ -36,7 +36,7 @@ import (
 )
 
 // Version is the application version (overridable with -ldflags -X main.Version=...).
-var Version = "0.11.0"
+var Version = "0.12.0"
 
 type globals struct {
 	dataDir string
@@ -234,6 +234,7 @@ func cmdRun(args []string, console bool) error {
 				log.Warn("database checkpoint failed", "err", err)
 			}
 			if desk != nil {
+				desk.MatchSaved(m)
 				go func() {
 					ms, err := st.List(context.Background())
 					if err != nil {

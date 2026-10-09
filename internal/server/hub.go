@@ -151,6 +151,7 @@ func (s *Server) hubRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/players/{handle}/config", s.playerConfig)
 	mux.HandleFunc("GET /api/players/{handle}/status", s.hubStatus)
 	mux.HandleFunc("GET /api/players/{handle}/export.csv", s.exportCSV)
+	mux.HandleFunc("GET /api/players/{handle}/ranks", s.listRanks)
 	mux.HandleFunc("POST /api/discord/test", s.discordTest)
 	mux.HandleFunc("GET /api/shared", s.sharedMatches)
 	mux.HandleFunc("GET /api/players/{handle}/shared", s.sharedMatches)

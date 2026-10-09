@@ -69,6 +69,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/manual", s.listManual)
 	mux.HandleFunc("PUT /api/manual/{day}/{mode}", s.putManual)
 	mux.HandleFunc("POST /api/import", s.importFiles)
+	mux.HandleFunc("GET /api/ranks", s.listRanks)
+	mux.HandleFunc("POST /api/ranks", s.addRank)
+	mux.HandleFunc("DELETE /api/ranks/{id}", s.deleteRank)
 	if s.Hub == nil && s.InstallUpdate != nil {
 		mux.HandleFunc("POST /api/update/install", s.installUpdate)
 	}
@@ -622,4 +625,60 @@ func (s *Server) ListenAndServeAddr(ctx context.Context, addr string) error {
 		return nil
 	}
 	return err
+}
+
+// ---------------------------------------------------------------- ranks
+
+func (s *Server) listRanks(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	rs, err := sc.Ranks(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rs)
+}
+
+// addRank records a rank and/or MMR (at defaults to now).
+func (s *Server) addRank(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	var rk store.Rank
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&rk); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if rk.At.IsZero() || rk.At.After(time.Now().Add(time.Minute)) {
+		rk.At = time.Now()
+	}
+	if err := sc.AddRank(r.Context(), &rk); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, rk)
+}
+
+func (s *Server) deleteRank(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if err := sc.DeleteRank(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	} else if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
