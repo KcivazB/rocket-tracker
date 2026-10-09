@@ -124,6 +124,13 @@ can be deleted from the PC's `outbox\` (the agent would otherwise send them agai
 A player can register several PCs. The status pill shows whether an agent is online and connected to the game;
 the Players page shows who is in a match right now.
 
+### Matches played together
+
+When several players of the server are in the same online match, each agent records it: the matches are linked
+by the game's match id. The history shows who else was there, the match page puts everyone's own stats side by
+side (movement and boost come from each player's own record), and the dashboard's **Server duos** table gives
+the record with each player (win rate together, average score of each) and against them.
+
 ### Discord
 
 With a webhook (Discord: channel settings → Integrations → Webhooks → New webhook → Copy URL) in

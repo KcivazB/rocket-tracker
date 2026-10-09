@@ -418,3 +418,60 @@ func TestHubTiltAlert(t *testing.T) {
 		t.Fatalf("no alert after 3 losses: %s", body)
 	}
 }
+
+func TestHubSharedMatches(t *testing.T) {
+	e := newHub(t, nil)
+	alice, bob := e.devLogin(t, "Alice"), e.devLogin(t, "Bob")
+	base := e.ts.URL
+	token := func(c *http.Client) []string {
+		_, body := call(t, c, "POST", base+"/api/devices", `{"name":"PC"}`)
+		var created struct {
+			Token string `json:"token"`
+		}
+		json.Unmarshal([]byte(body), &created)
+		return []string{"Authorization", "Bearer " + created.Token, "Origin", ""}
+	}
+	start := time.Now().Add(-2 * time.Hour).UTC()
+	send := func(auth []string, guid, name, pid string, team int, score int) {
+		m := fmt.Sprintf(`{"key":"%s-%s","match":{"guid":%q,"online":true,"started_at":%q,"ended_at":%q,"mode":"2v2","result":"win","my_team":%d,
+			"team_score":3,"opp_score":1,"me":{"name":%q,"primary_id":%q,"score":%d},"movement":{"avg_speed":1234}}}`,
+			guid, name, guid, start.Format(time.RFC3339), start.Add(6*time.Minute).Format(time.RFC3339), team, name, pid, score)
+		if code, body := call(t, &http.Client{}, "POST", base+"/api/agent/matches", m, auth...); code != 200 {
+			t.Fatalf("upload %d %s", code, body)
+		}
+	}
+	aa, ba := token(alice), token(bob)
+	send(aa, "G1", "AliceRL", "Epic|a|0", 0, 500)
+	send(ba, "G1", "BobRL", "Epic|b|0", 0, 300) // same team
+	send(aa, "G2", "AliceRL", "Epic|a|0", 0, 200)
+
+	code, body := call(t, alice, "GET", base+"/api/shared", "")
+	var sh []struct {
+		ID   int64 `json:"id"`
+		With []struct {
+			Handle    string `json:"handle"`
+			ID        int64  `json:"id"`
+			SameTeam  bool   `json:"same_team"`
+			PrimaryID string `json:"primary_id"`
+		} `json:"with"`
+	}
+	if code != 200 || json.Unmarshal([]byte(body), &sh) != nil || len(sh) != 1 || len(sh[0].With) != 1 ||
+		sh[0].With[0].Handle != "bob" || !sh[0].With[0].SameTeam || sh[0].With[0].PrimaryID != "Epic|b|0" {
+		t.Fatalf("shared %d %s", code, body)
+	}
+	// Another player's view, read-only.
+	if code, body := call(t, alice, "GET", base+"/api/players/bob/shared", ""); code != 200 || !strings.Contains(body, `"handle":"alice"`) {
+		t.Fatalf("bob's shared %d %s", code, body)
+	}
+	code, body = call(t, alice, "GET", fmt.Sprintf("%s/api/matches/%d/shared", base, sh[0].ID), "")
+	if code != 200 || !strings.Contains(body, `"handle":"bob"`) || !strings.Contains(body, `"score":300`) || !strings.Contains(body, `"avg_speed":1234`) {
+		t.Fatalf("copies %d %s", code, body)
+	}
+	code, body = call(t, alice, "GET", fmt.Sprintf("%s/api/players/bob/matches/%d/shared", base, sh[0].With[0].ID), "")
+	if code != 200 || !strings.Contains(body, `"handle":"alice"`) || !strings.Contains(body, `"score":500`) {
+		t.Fatalf("bob's copies %d %s", code, body)
+	}
+	if code, _ := call(t, bob, "GET", fmt.Sprintf("%s/api/matches/%d/shared", base, sh[0].ID), ""); code != 404 {
+		t.Fatalf("someone else's match id: %d", code)
+	}
+}

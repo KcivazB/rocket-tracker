@@ -973,6 +973,8 @@
   var state = {
     all: [],
     filtered: [],
+    shared: {},       // server mode: match id -> other accounts that recorded it
+    sharedCopies: {}, // apiBase/id -> their records of that match (match page)
     filters: loadFilters(),
     status: null,
     statusError: false,
@@ -1840,6 +1842,46 @@
       }).join('') : '<tr class="empty-row"><td colspan="6">' + tr('tbl.noMate') + '</td></tr>') + '</tbody>';
   }
 
+  /** Server mode: record with and against the other server players (matches both recorded). */
+  function computeDuos(ms) {
+    var by = {};
+    ms.forEach(function (m) {
+      var w = (state.shared || {})[m.id];
+      if (!w || (m.result !== 'win' && m.result !== 'loss')) return;
+      var win = m.result === 'win';
+      w.forEach(function (x) {
+        var d = by[x.handle] || (by[x.handle] = { handle: x.handle, name: x.name, n: 0, wins: 0, my: 0, their: 0, scored: 0, vsN: 0, vsWins: 0 });
+        if (!x.same_team) { d.vsN++; if (win) d.vsWins++; return; }
+        d.n++;
+        if (win) d.wins++;
+        var pid = String(x.primary_id || '').toLowerCase();
+        var p = pid && (m.players || []).find(function (pl) { return String(pl.primary_id || '').toLowerCase() === pid; });
+        if (p && isNum(p.score) && m.me && isNum(m.me.score)) { d.scored++; d.my += m.me.score; d.their += p.score; }
+      });
+    });
+    return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return (b.n + b.vsN) - (a.n + a.vsN); });
+  }
+  function renderDuos(ms) {
+    var sec = $('#duos-section');
+    var rows = isServer() ? computeDuos(ms) : [];
+    sec.hidden = !rows.length;
+    if (!rows.length) return;
+    var overall = wl(ms).wr;
+    $('#t-duos').innerHTML = '<thead><tr><th>' + tr('duos.player') + '</th><th class="r">' + tr('duos.together') + '</th><th class="r">' + tr('kpi.winrate') + '</th>' +
+      '<th class="r" title="' + esc(tr('tbl.vsAvgTip')) + '">' + tr('tbl.vsAvg') + '</th><th class="r hide-mobile" title="' + esc(tr('duos.scoreTip')) + '">' + tr('duos.score') + '</th>' +
+      '<th class="r">' + tr('duos.against') + '</th></tr></thead><tbody>' + rows.map(function (d) {
+        var wr = d.n ? d.wins / d.n : null;
+        var diff = isNum(wr) && isNum(overall) ? (wr - overall) * 100 : null;
+        var me = d.scored ? d.my / d.scored : null, them = d.scored ? d.their / d.scored : null;
+        return '<tr><td class="name"><a href="' + routeHash(d.handle, '') + '">' + esc(d.name) + '</a></td>' +
+          '<td class="r">' + (d.n ? d.n + ' <small class="muted">(' + d.wins + '–' + (d.n - d.wins) + ')</small>' : '—') + '</td>' +
+          '<td class="r">' + (d.n ? wrCell(wr) : '—') + '</td>' +
+          '<td class="r">' + (diff == null ? '—' : fmtSigned(diff) + ' pts') + '</td>' +
+          '<td class="r hide-mobile num">' + (me == null ? '—' : fmtNum(me) + ' / ' + fmtNum(them)) + '</td>' +
+          '<td class="r">' + (d.vsN ? d.vsWins + '–' + (d.vsN - d.vsWins) : '—') + '</td></tr>';
+      }).join('') + '</tbody>';
+  }
+
   function tagOptions(selected) {
     var tags = TAGS.slice();
     if (selected && tags.indexOf(selected) < 0) tags.push(selected);
@@ -1867,6 +1909,8 @@
       if (m.forfeit) chips.push('<span class="chip" title="' + esc(tr('badge.forfeitTip')) + '">' + tr('badge.forfeit') + '</span>');
       if (m.mvp) chips.push('<span class="chip mvp">MVP</span>');
       if (m.online === false) chips.push('<span class="chip">' + tr('badge.offline') + '</span>');
+      var sw = sharedChip(m);
+      if (sw) chips.push(sw);
       html += '<tr class="row' + (open ? ' open' : '') + '" data-id="' + m.id + '" tabindex="0" aria-expanded="' + open + '">' +
         '<td><span class="caret">›</span></td>' +
         '<td class="nowrap"><a class="row-link" href="' + href('match/' + m.id) + '" title="' + esc(tr('tbl.openMatch')) + '">' + esc(fmtDate(m._t, true)) + '</a></td>' +
@@ -2016,7 +2060,18 @@
     }
     if (m.partial) b.push('<span class="chip warn" title="' + esc(partialTip()) + '">' + tr('badge.partial') + '</span>');
     if (m.online === false) b.push('<span class="chip" title="' + esc(tr('badge.offlineTip')) + '">' + tr('badge.offline') + '</span>');
+    var sw = sharedChip(m);
+    if (sw) b.push(sw);
     return b.join('');
+  }
+  /** Chip naming the server players who were in the match too. */
+  function sharedChip(m) {
+    var w = (state.shared || {})[m.id];
+    if (!w || !w.length) return '';
+    var mates = w.filter(function (x) { return x.same_team; }).map(function (x) { return x.name; });
+    var opps = w.filter(function (x) { return !x.same_team; }).map(function (x) { return x.name; });
+    var tip = [mates.length ? tr('shared.with', { v: mates.join(', ') }) : '', opps.length ? tr('shared.against', { v: opps.join(', ') }) : ''].filter(Boolean).join(' · ');
+    return '<span class="chip shared" title="' + esc(tip) + '">👥 ' + esc(w.map(function (x) { return x.name; }).join(', ')) + '</span>';
   }
   function tagFilterOptions() {
     var tags = TAGS.slice();
@@ -2317,6 +2372,56 @@
         return '<li' + (r.label !== r.key ? ' title="' + esc(tr('feed.event', { v: r.key })) + '"' : '') + '><span>' + esc(r.label) + '</span><b class="num">×' + r.n + '</b></li>';
       }).join('') + '</ul></section>';
   }
+  /** The same match recorded by other server players: everyone's own stats side by side. */
+  var SHARED_ROWS = [
+    { src: 'me', key: 'score', lk: 'perf.score', digits: 0, higherBetter: true },
+    { src: 'me', key: 'goals', lk: 'perf.goals', digits: 0, higherBetter: true },
+    { src: 'me', key: 'assists', lk: 'perf.assists', digits: 0, higherBetter: true },
+    { src: 'me', key: 'saves', lk: 'perf.saves', digits: 0, higherBetter: true },
+    { src: 'me', key: 'shots', lk: 'perf.shots', digits: 0, higherBetter: true },
+    { src: 'me', key: 'touches', lk: 'perf.touches', digits: 0, higherBetter: null },
+    { src: 'me', key: 'demos', lk: 'perf.demos', digits: 0, higherBetter: true }
+  ].concat(MOVE_STATS.filter(function (s) { return !s.split; }).map(function (s) { return Object.assign({ src: 'movement' }, s); }));
+  function mpShared(m) {
+    var w = (state.shared || {})[m.id];
+    if (!w || !w.length) return '';
+    var key = apiBase() + '/' + m.id, cp = state.sharedCopies[key];
+    if (cp === undefined) { loadSharedCopies(m.id, key); cp = null; }
+    var head = '<section class="card mp-card mp-shared" aria-labelledby="mp-h-shared"><div class="mp-head"><h2 id="mp-h-shared">' + tr('shared.title') + '</h2>' +
+      '<span class="card-meta">' + tr('shared.sub') + '</span></div>';
+    if (cp === 'err') return head + '<p class="muted small">' + tr('shared.failed') + '</p></section>';
+    if (!cp) return head + '<p class="muted small">' + tr('common.loading') + '</p></section>';
+    var self = state.route.player ? (viewedPlayer() || {}).name : tr('common.you');
+    var cols = [{ name: self, m: m, us: true }].concat(cp.map(function (c) {
+      return { name: c.player.name, handle: c.player.handle, m: c.match, us: c.match.my_team === m.my_team };
+    }));
+    var th = cols.map(function (c) {
+      var n = esc(c.name) + (c.m.me && c.m.me.name && c.m.me.name !== c.name ? ' <small class="muted">' + esc(c.m.me.name) + '</small>' : '');
+      if (c.handle && !(state.me && c.handle === state.me.handle)) n = '<a href="' + routeHash(c.handle, 'match/' + c.m.id) + '">' + n + '</a>';
+      return '<th class="r"><span class="team-dot" style="background:var(--' + (c.us ? 'us' : 'them') + ')"></span>' + n + '</th>';
+    }).join('');
+    var rows = SHARED_ROWS.map(function (s) {
+      var vals = cols.map(function (c) { return statValue(c.m, s.src, s); });
+      if (!vals.some(isNum)) return '';
+      var nums = vals.filter(isNum);
+      var best = s.higherBetter == null || nums.length < 2 ? null : (s.higherBetter ? Math.max : Math.min).apply(null, nums);
+      return '<tr><th scope="row">' + esc(statLabel(s)) + '</th>' + vals.map(function (v) {
+        return '<td class="r num' + (best != null && v === best ? ' best' : '') + '">' + (isNum(v) ? fmtNum(v, s.digits) + cmpUnit(s) : '—') + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    return head + '<div class="table-scroll"><table class="data-table shared-table"><thead><tr><th></th>' + th + '</tr></thead><tbody>' + rows + '</tbody></table></div></section>';
+  }
+  function loadSharedCopies(id, key) {
+    state.sharedCopies[key] = null;
+    apiFetch(apiBase() + '/matches/' + id + '/shared').then(function (cp) {
+      state.sharedCopies[key] = Array.isArray(cp) ? cp : [];
+    }).catch(function (e) {
+      console.warn('shared copies', e);
+      state.sharedCopies[key] = 'err';
+    }).then(function () {
+      if (state.route.view === 'match' && state.route.id === id) renderMatchPage();
+    });
+  }
   function renderMatchPage() {
     var box = $('#view-match');
     var id = state.route.id;
@@ -2335,7 +2440,7 @@
     var right = mpMovement(m, base) + mpFeed(m);
     var left = mpGoals(m) + (right ? mpPerf(m, base) : '');
     if (!right) right = mpPerf(m, base);
-    box.innerHTML = mpNav(nb) + mpHero(m, ctx) + mpScoreboard(m) + '<div class="mp-grid"><div class="mp-col">' + left + '</div><div class="mp-col">' + right + '</div></div>';
+    box.innerHTML = mpNav(nb) + mpHero(m, ctx) + mpScoreboard(m) + mpShared(m) + '<div class="mp-grid"><div class="mp-col">' + left + '</div><div class="mp-col">' + right + '</div></div>';
   }
   function bindMatchView() {
     var v = $('#view-match');
@@ -2556,7 +2661,7 @@
     $('#no-results').hidden = !empty;
     $('#content').hidden = empty;
     if (!empty) {
-      var steps = [renderKpis, renderProgression, renderActivity, renderGoals, renderSituations, renderMental, renderTime, renderMechanics, renderFeed, renderArenas, renderMates];
+      var steps = [renderKpis, renderProgression, renderActivity, renderGoals, renderSituations, renderMental, renderTime, renderMechanics, renderFeed, renderArenas, renderMates, renderDuos];
       steps.forEach(function (fn) {
         try { fn(ms); } catch (e) { console.error('render failed:', fn.name, e); }
       });
@@ -2566,8 +2671,21 @@
 
   /* ---------- data loading ---------- */
   // Each loader drops its answer when the viewed player changed meanwhile (state.gen).
+  /** Server mode: which of the viewed player's matches other accounts recorded too (id -> with[]). */
+  function loadShared() {
+    var gen = state.gen;
+    if (!isServer() || MOCK) { state.shared = {}; return Promise.resolve(); }
+    return apiFetch(apiBase() + '/shared').then(function (list) {
+      if (gen !== state.gen) return;
+      var map = {};
+      (list || []).forEach(function (s) { map[s.id] = s.with || []; });
+      state.shared = map;
+      renderAll();
+    }).catch(function (e) { console.warn('shared', e); });
+  }
   function loadMatches() {
     var gen = state.gen;
+    loadShared();
     return apiFetch(apiBase() + '/matches').then(function (data) {
       if (gen !== state.gen) return;
       state.all = annotate(Array.isArray(data) ? data : []);

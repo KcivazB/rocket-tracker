@@ -151,6 +151,10 @@ func (s *Server) hubRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/players/{handle}/config", s.playerConfig)
 	mux.HandleFunc("GET /api/players/{handle}/status", s.hubStatus)
 	mux.HandleFunc("GET /api/players/{handle}/export.csv", s.exportCSV)
+	mux.HandleFunc("GET /api/shared", s.sharedMatches)
+	mux.HandleFunc("GET /api/players/{handle}/shared", s.sharedMatches)
+	mux.HandleFunc("GET /api/matches/{id}/shared", s.sharedCopies)
+	mux.HandleFunc("GET /api/players/{handle}/matches/{id}/shared", s.sharedCopies)
 	mux.HandleFunc("GET /api/leaderboard", s.leaderboard)
 	mux.HandleFunc("GET /api/devices", s.listDevices)
 	mux.HandleFunc("POST /api/devices", s.createDevice)
@@ -628,4 +632,98 @@ func (s *Server) leaderboard(w http.ResponseWriter, r *http.Request) {
 		return out[i].Games > out[j].Games
 	})
 	writeJSON(w, http.StatusOK, out)
+}
+
+// playerRef names another account in shared matches.
+type playerRef struct {
+	Handle string `json:"handle"`
+	Name   string `json:"name"`
+}
+
+type sharedWithJSON struct {
+	store.SharedWith
+	playerRef
+	SameTeam bool `json:"same_team"`
+}
+
+type sharedJSON struct {
+	ID     int64            `json:"id"`
+	GUID   string           `json:"guid"`
+	MyTeam int              `json:"my_team"`
+	With   []sharedWithJSON `json:"with"`
+}
+
+// sharedMatches lists the player's matches that other accounts recorded too.
+func (s *Server) sharedMatches(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	sh, err := sc.Shared(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	names, err := s.playerNames(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]sharedJSON, 0, len(sh))
+	for _, x := range sh {
+		j := sharedJSON{ID: x.MatchID, GUID: x.GUID, MyTeam: x.MyTeam, With: []sharedWithJSON{}}
+		for _, wi := range x.With {
+			j.With = append(j.With, sharedWithJSON{SharedWith: wi, playerRef: names[wi.UserID], SameTeam: wi.Team == x.MyTeam})
+		}
+		out = append(out, j)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// sharedCopies returns the other accounts' records of one of the player's
+// matches: their own stats (movement, boost...) in the same game.
+func (s *Server) sharedCopies(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	cp, err := sc.SharedCopies(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	} else if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	names, err := s.playerNames(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type copyJSON struct {
+		Player playerRef    `json:"player"`
+		Match  *store.Match `json:"match"`
+	}
+	out := make([]copyJSON, 0, len(cp))
+	for _, c := range cp {
+		out = append(out, copyJSON{Player: names[c.UserID], Match: c.Match})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) playerNames(ctx context.Context) (map[int64]playerRef, error) {
+	us, err := s.Store.Users(ctx)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[int64]playerRef, len(us))
+	for _, u := range us {
+		m[u.ID] = playerRef{Handle: u.Handle, Name: displayName(u)}
+	}
+	return m, nil
 }

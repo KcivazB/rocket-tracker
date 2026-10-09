@@ -174,6 +174,11 @@ button, input, select { font: inherit; color: inherit; }
 .live-score .clock.ot { color: var(--warn); }
 .live-me { display: flex; gap: 16px; font-size: 13px; color: var(--text-2); }
 .live-me b { display: block; font-size: 18px; color: var(--text); font-weight: 650; }
+.chip.shared { background: var(--us-soft); }
+.shared-table td.best { color: var(--text); font-weight: 700; }
+.shared-table tbody th { text-transform: none; letter-spacing: 0; font-size: 13.5px; font-weight: 500; color: var(--text-2); background: none; }
+.shared-table .team-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.shared-table th a { color: inherit; }
 .live-met { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 13px; color: var(--text-2); border-top: 1px solid var(--border); padding-top: 10px; }
 .live-met > span { font-weight: 650; color: var(--text); }
 .live-met ul { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; }
