@@ -65,3 +65,23 @@ func TestGoalNormalize(t *testing.T) {
 		t.Fatalf("end before start kept: %+v", c.Goal)
 	}
 }
+
+func TestValidDiscordWebhook(t *testing.T) {
+	for u, want := range map[string]bool{
+		"https://discord.com/api/webhooks/123/abc":        true,
+		"https://discordapp.com/api/webhooks/123/abc":     true,
+		"https://ptb.discord.com/api/webhooks/123/abc":    true,
+		"http://discord.com/api/webhooks/123/abc":         false, // not https
+		"https://discord.com.evil.example/api/webhooks/1": false,
+		"https://discord.com:8443/api/webhooks/123/abc":   false,
+		"https://user@discord.com/api/webhooks/123/abc":   false,
+		"https://discord.com/api/webhooks/":               false,
+		"https://discord.com/channels/1/2":                false,
+		"https://192.168.1.10/api/webhooks/1/x":           false,
+		"":                                                false,
+	} {
+		if got := ValidDiscordWebhook(u); got != want {
+			t.Errorf("%q: %v, want %v", u, got, want)
+		}
+	}
+}

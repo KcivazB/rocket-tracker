@@ -67,8 +67,7 @@ docker compose logs -f
 | `RT_DATA_DIR` | `/data` (image) | Where `rltracker-server.db` lives. |
 | `RT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`. |
 | `RT_INSECURE_DEV_LOGIN` | — | `1` lets anyone sign in as anyone. **Local tests only.** |
-| `RT_DISCORD_WEBHOOK` / `RT_DISCORD_WEBHOOK_FILE` | — | Discord webhook URL (or a file containing it): see [Discord](#discord). |
-| `RT_LANG` | `en` | `fr` or `en`: language of the Discord posts. |
+| `RT_LANG` | `en` | `fr` or `en`: language of the [Discord](#discord) posts. |
 
 ## 3. Reverse proxy
 
@@ -133,16 +132,18 @@ the record with each player (win rate together, average score of each) and again
 
 ### Discord
 
-With a webhook (Discord: channel settings → Integrations → Webhooks → New webhook → Copy URL) in
-`RT_DISCORD_WEBHOOK`, the server posts to that channel:
+Each player can paste **their own** Discord webhook in **Settings** (Discord: channel settings → Integrations →
+Webhooks → New webhook → Copy URL), and check it with **Test**. The server then posts to that channel only:
 
-- the highlights of a won match: overtime, hat trick, comeback from 2 goals down or more, every 5 wins in a row;
-- a recap when a player's session ends (no match for 30 minutes, 3 matches at least);
-- every Monday at 9:00 (server time, set `TZ` in the container), last week's leaderboard (5 decided matches at
-  least).
+- the highlights of the player's won matches: overtime, hat trick, comeback from 2 goals down or more, every 5
+  wins in a row;
+- a recap when their session ends (no match for 30 minutes, 3 matches at least);
+- every Monday at 9:00 (server time, set `TZ` in the container), last week's leaderboard of the players who set a
+  webhook (5 decided matches at least). Players without a webhook get nothing and are left out of it.
 
-Only online matches sent live by an agent count (not imports, nor a queue sent hours later). A player can opt
-out in **Settings**. The last weekly post is remembered in `data/discord.json`.
+Only online matches sent live by an agent count (not imports, nor a queue sent hours later). The server only
+accepts `https://discord.com/api/webhooks/…` URLs, and a webhook is never shown to the other players. The last
+weekly post is remembered in `data/discord.json`.
 
 ## Backups and upgrades
 

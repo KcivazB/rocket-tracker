@@ -2845,7 +2845,7 @@
       form.elements.player_ids.value = (currentConfig.player_ids || []).join(', ');
       form.elements.default_tag.innerHTML = tagOptions(currentConfig.default_tag || 'ranked');
       form.elements.tilt_streak.innerHTML = tiltOptions(isNum(currentConfig.tilt_streak) ? currentConfig.tilt_streak : 3);
-      form.elements.discord_on.checked = !currentConfig.discord_off;
+      form.elements.discord_webhook.value = currentConfig.discord_webhook || '';
       form.elements.rl_install_dir.value = currentConfig.rl_install_dir || '';
       var goal = Object.assign({}, GOAL_DEFAULT, currentConfig.goal || {});
       form.elements.goal_mode.value = goal.mode;
@@ -2859,6 +2859,14 @@
     var dlg = $('#settings');
     var form = $('#settings-form');
     $('#open-settings').addEventListener('click', openSettings);
+    $('#discord-test').addEventListener('click', function () {
+      var msg = $('#settings-msg'), hook = form.elements.discord_webhook.value.trim();
+      if (!hook) { msg.textContent = tr('set.discordEmpty'); msg.className = 'form-msg err'; return; }
+      msg.textContent = tr('common.loading'); msg.className = 'form-msg';
+      apiFetch('/api/discord/test', { method: 'POST', body: JSON.stringify({ webhook: hook }) }).then(function () {
+        msg.textContent = tr('set.discordSent'); msg.className = 'form-msg';
+      }).catch(function (e) { msg.textContent = tr('set.discordFailed', { v: e.message }); msg.className = 'form-msg err'; });
+    });
     $$('[data-open-settings]').forEach(function (b) { b.addEventListener('click', openSettings); });
     $$('[data-close]', dlg).forEach(function (b) { b.addEventListener('click', function () { dlg.close ? dlg.close() : dlg.removeAttribute('open'); }); });
     form.addEventListener('submit', function (e) {
@@ -2869,7 +2877,7 @@
         player_ids: split(form.elements.player_ids.value),
         default_tag: form.elements.default_tag.value,
         tilt_streak: parseInt(form.elements.tilt_streak.value, 10) || 0,
-        discord_off: !form.elements.discord_on.checked,
+        discord_webhook: form.elements.discord_webhook.value.trim(),
         rl_install_dir: form.elements.rl_install_dir.value.trim(),
         goal: {
           mode: form.elements.goal_mode.value,

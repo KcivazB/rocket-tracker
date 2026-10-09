@@ -418,6 +418,10 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "default_tag must be one of ranked, casual, tournament, private, other")
 		return
 	}
+	if hook := strings.TrimSpace(c.DiscordWebhook); hook != "" && !config.ValidDiscordWebhook(hook) {
+		writeErr(w, http.StatusBadRequest, "discord_webhook must be a Discord webhook URL (https://discord.com/api/webhooks/...)")
+		return
+	}
 	if s.Hub != nil {
 		saved, err := s.setUserSettings(r.Context(), userFrom(r).ID, c)
 		if err != nil {

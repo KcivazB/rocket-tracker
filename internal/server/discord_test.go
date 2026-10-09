@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -16,14 +17,22 @@ import (
 	"rocket-tracker/internal/store"
 )
 
-// webhook records the embeds posted to a fake Discord webhook.
+// webhook is a fake Discord: the client it returns sends every request to it,
+// whatever the (real-looking) webhook URL, and it records which webhook got
+// which embed.
 type webhook struct {
 	mu     sync.Mutex
-	posts  []embed
+	posts  []post
+	seen   int // posts already returned by wait
 	posted chan struct{}
 }
 
-func newWebhook(t *testing.T) (*webhook, string) {
+type post struct {
+	hook string // webhook path, e.g. /api/webhooks/1/alice
+	embed
+}
+
+func newWebhook(t *testing.T) (*webhook, *http.Client) {
 	w := &webhook{posted: make(chan struct{}, 20)}
 	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -34,16 +43,25 @@ func newWebhook(t *testing.T) (*webhook, string) {
 			t.Errorf("bad webhook body %s", b)
 		}
 		w.mu.Lock()
-		w.posts = append(w.posts, body.Embeds...)
+		w.posts = append(w.posts, post{r.URL.Path, body.Embeds[0]})
 		w.mu.Unlock()
 		rw.WriteHeader(http.StatusNoContent)
 		w.posted <- struct{}{}
 	}))
 	t.Cleanup(ts.Close)
-	return w, ts.URL
+	target, _ := url.Parse(ts.URL)
+	return w, &http.Client{Transport: roundTripper(func(r *http.Request) (*http.Response, error) {
+		r = r.Clone(r.Context())
+		r.URL.Scheme, r.URL.Host = target.Scheme, target.Host
+		return http.DefaultTransport.RoundTrip(r)
+	})}
 }
 
-func (w *webhook) wait(t *testing.T) embed {
+type roundTripper func(*http.Request) (*http.Response, error)
+
+func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func (w *webhook) wait(t *testing.T) post {
 	t.Helper()
 	select {
 	case <-w.posted:
@@ -52,7 +70,19 @@ func (w *webhook) wait(t *testing.T) embed {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.posts[len(w.posts)-1]
+	w.seen++
+	return w.posts[w.seen-1]
+}
+
+func (w *webhook) none(t *testing.T) {
+	t.Helper()
+	select {
+	case <-w.posted:
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		t.Fatalf("unexpected post %+v", w.posts[len(w.posts)-1])
+	case <-time.After(150 * time.Millisecond):
+	}
 }
 
 func TestDiscordHighlights(t *testing.T) {
@@ -121,18 +151,46 @@ func TestLastWeeklySlot(t *testing.T) {
 	}
 }
 
-func TestDiscordFromAgentAndWeekly(t *testing.T) {
-	hook, hookURL := newWebhook(t)
+const (
+	aliceHook = "https://discord.com/api/webhooks/1/alice"
+	bobHook   = "https://discord.com/api/webhooks/2/bob"
+)
+
+func TestDiscordPerPlayer(t *testing.T) {
+	hook, client := newWebhook(t)
 	e := newHub(t, nil)
-	e.s.Hub.Discord = &Discord{WebhookURL: hookURL, PublicURL: e.ts.URL, Lang: i18n.EN}
+	e.s.Hub.Discord = &Discord{PublicURL: e.ts.URL, Lang: i18n.EN, Client: client}
 	ctx := context.Background()
-	alice, bob := e.devLogin(t, "Alice"), e.devLogin(t, "Bob")
+	alice, bob, carol := e.devLogin(t, "Alice"), e.devLogin(t, "Bob"), e.devLogin(t, "Carol")
 	base := e.ts.URL
 
-	// Bob opts out.
-	if code, body := call(t, bob, "PUT", base+"/api/config", `{"discord_off":true}`); code != 200 || !strings.Contains(body, `"discord_off":true`) {
-		t.Fatalf("opt out %d %s", code, body)
+	// Only Discord webhook URLs are accepted (the server must not call anything else).
+	if code, _ := call(t, alice, "PUT", base+"/api/config", `{"discord_webhook":"http://192.168.1.10/hook"}`); code != 400 {
+		t.Fatalf("non-Discord URL accepted: %d", code)
 	}
+	if code, _ := call(t, alice, "POST", base+"/api/discord/test", `{"webhook":"https://evil.example/api/webhooks/1/x"}`); code != 400 {
+		t.Fatalf("test of a non-Discord URL: %d", code)
+	}
+	for _, x := range []struct {
+		c    *http.Client
+		hook string
+	}{{alice, aliceHook}, {bob, bobHook}} {
+		if code, body := call(t, x.c, "PUT", base+"/api/config", `{"discord_webhook":"`+x.hook+`"}`); code != 200 || !strings.Contains(body, x.hook) {
+			t.Fatalf("set webhook %d %s", code, body)
+		}
+	}
+	// The test button posts to the webhook typed in the form.
+	if code, body := call(t, alice, "POST", base+"/api/discord/test", `{"webhook":"`+aliceHook+`"}`); code != 200 {
+		t.Fatalf("test %d %s", code, body)
+	}
+	if p := hook.wait(t); p.hook != "/api/webhooks/1/alice" || p.Title != "Rocket Tracker is connected" {
+		t.Fatalf("%+v", p)
+	}
+	// Another player never sees the webhook.
+	if _, body := call(t, bob, "GET", base+"/api/players/alice/config", ""); strings.Contains(body, "webhooks") {
+		t.Fatalf("webhook leaked: %s", body)
+	}
+
 	token := func(c *http.Client) []string {
 		_, body := call(t, c, "POST", base+"/api/devices", `{"name":"PC"}`)
 		var created struct {
@@ -149,34 +207,31 @@ func TestDiscordFromAgentAndWeekly(t *testing.T) {
 			t.Fatalf("upload %d %s", code, body)
 		}
 	}
-	aliceAuth, bobAuth := token(alice), token(bob)
-	send(bobAuth, 0, "win", true) // opted out: nothing
+	aliceAuth, carolAuth := token(alice), token(carol)
+	send(carolAuth, 0, "win", true) // no webhook: nothing
+	hook.none(t)
 	send(aliceAuth, 1, "win", true)
-	if p := hook.wait(t); p.Title != "Alice wins 2-1 in 2v2" || !strings.Contains(p.Description, "Overtime") {
+	if p := hook.wait(t); p.hook != "/api/webhooks/1/alice" || p.Title != "Alice wins 2-1 in 2v2" || !strings.Contains(p.Description, "Overtime") {
 		t.Fatalf("%+v", p)
 	}
 	send(aliceAuth, 2, "loss", false)
 	send(aliceAuth, 3, "win", false)
 
-	// 30 minutes later, the session recap.
+	// 30 minutes later, the session recap, on Alice's webhook only.
 	d := e.s.Hub.Discord
 	d.closeSessions(ctx, e.st, time.Now().Add(time.Minute))
-	select {
-	case <-hook.posted:
-		t.Fatal("session closed too early")
-	case <-time.After(100 * time.Millisecond):
-	}
+	hook.none(t)
 	d.closeSessions(ctx, e.st, time.Now().Add(time.Hour))
-	if p := hook.wait(t); p.Title != "Alice's session is over" || !strings.HasPrefix(p.Description, "3 matches · 2W-1L") {
+	if p := hook.wait(t); p.hook != "/api/webhooks/1/alice" || p.Title != "Alice's session is over" || !strings.HasPrefix(p.Description, "3 matches · 2W-1L") {
 		t.Fatalf("%+v", p)
 	}
 
-	// Weekly leaderboard: 5 decided matches needed, opted-out players left out.
-	ua, _ := e.st.UserByHandle(ctx, "alice")
-	ub, _ := e.st.UserByHandle(ctx, "bob")
-	for i := 0; i < 6; i++ {
-		start := time.Now().Add(-time.Duration(48+i) * time.Hour).UTC()
-		for _, u := range []*store.User{ua, ub} {
+	// Weekly leaderboard: to every webhook, ranking the players who set one
+	// (5 decided matches at least): Carol has none, she stays out.
+	for _, h := range []string{"alice", "bob", "carol"} {
+		u, _ := e.st.UserByHandle(ctx, h)
+		for i := 0; i < 6; i++ {
+			start := time.Now().Add(-time.Duration(48+i) * time.Hour).UTC()
 			m := &store.Match{GUID: fmt.Sprintf("W%d-%d", u.ID, i), Online: true, Mode: "2v2", Result: "loss",
 				StartedAt: start, EndedAt: start.Add(6 * time.Minute), TeamScore: 1, OppScore: 2}
 			if err := e.st.User(u.ID).Save(ctx, m); err != nil {
@@ -187,14 +242,17 @@ func TestDiscordFromAgentAndWeekly(t *testing.T) {
 	slot := lastWeeklySlot(time.Now().AddDate(0, 0, 7))
 	d.weekly = slot.AddDate(0, 0, -7) // last recap a week ago: this one is due
 	d.weeklyRecap(ctx, e.st, slot.Add(time.Minute))
-	p := hook.wait(t)
-	if p.Title != "🏆 Leaderboard of the week" || !strings.Contains(p.Description, "🥇 **Alice** — 22% (2W-7L)") || strings.Contains(p.Description, "Bob") {
-		t.Fatalf("%+v", p)
+	got := map[string]string{}
+	for i := 0; i < 2; i++ {
+		p := hook.wait(t)
+		got[p.hook] = p.Description
+	}
+	hook.none(t)
+	for _, h := range []string{"/api/webhooks/1/alice", "/api/webhooks/2/bob"} {
+		if desc := got[h]; !strings.Contains(desc, "**Alice** — 22% (2W-7L)") || !strings.Contains(desc, "**Bob** — 0% (0W-6L)") || strings.Contains(desc, "Carol") {
+			t.Fatalf("%s: %q", h, desc)
+		}
 	}
 	d.weeklyRecap(ctx, e.st, slot.Add(2*time.Minute))
-	select {
-	case <-hook.posted:
-		t.Fatal("weekly recap posted twice")
-	case <-time.After(100 * time.Millisecond):
-	}
+	hook.none(t)
 }

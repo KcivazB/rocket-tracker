@@ -151,6 +151,7 @@ func (s *Server) hubRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/players/{handle}/config", s.playerConfig)
 	mux.HandleFunc("GET /api/players/{handle}/status", s.hubStatus)
 	mux.HandleFunc("GET /api/players/{handle}/export.csv", s.exportCSV)
+	mux.HandleFunc("POST /api/discord/test", s.discordTest)
 	mux.HandleFunc("GET /api/shared", s.sharedMatches)
 	mux.HandleFunc("GET /api/players/{handle}/shared", s.sharedMatches)
 	mux.HandleFunc("GET /api/matches/{id}/shared", s.sharedCopies)
@@ -409,12 +410,12 @@ func (s *Server) agentMatch(w http.ResponseWriter, r *http.Request) {
 		ID    int64       `json:"id"`
 		Alert *tilt.Alert `json:"alert,omitempty"` // break suggestion, shown by the agent
 	}{ID: m.ID}
-	if c.TiltStreak > 0 || (s.Hub.Discord != nil && !c.DiscordOff) {
+	if c.TiltStreak > 0 || (s.Hub.Discord != nil && c.DiscordWebhook != "") {
 		if ms, err := s.Store.User(u.ID).List(r.Context()); err == nil {
 			now := time.Now()
 			resp.Alert = tilt.Check(ms, c.TiltStreak, now)
-			if s.Hub.Discord != nil && !c.DiscordOff {
-				s.Hub.Discord.Match(u, m, ms, now)
+			if s.Hub.Discord != nil {
+				s.Hub.Discord.Match(u, c.DiscordWebhook, m, ms, now)
 			}
 		}
 	}
@@ -726,4 +727,30 @@ func (s *Server) playerNames(ctx context.Context) (map[int64]playerRef, error) {
 		m[u.ID] = playerRef{Handle: u.Handle, Name: displayName(u)}
 	}
 	return m, nil
+}
+
+// discordTest posts a test message to the webhook typed in the settings (not
+// saved yet), so the player can check it.
+func (s *Server) discordTest(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Webhook string `json:"webhook"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	hook := strings.TrimSpace(body.Webhook)
+	if !config.ValidDiscordWebhook(hook) {
+		writeErr(w, http.StatusBadRequest, "not a Discord webhook URL (https://discord.com/api/webhooks/...)")
+		return
+	}
+	if s.Hub.Discord == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Discord is not enabled on this server")
+		return
+	}
+	if err := s.Hub.Discord.Test(r.Context(), userFrom(r), hook); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

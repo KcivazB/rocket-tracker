@@ -114,6 +114,8 @@ var messages = map[string][2]string{
 	"discord.streak":        {"📈 %d victoires d'affilée", "📈 %d wins in a row"},
 	"discord.sessionTitle":  {"Fin de session pour %s", "%s's session is over"},
 	"discord.sessionText":   {"%d matchs · %dV-%dD (%d %%) · diff %s · %d buts · %d MVP", "%d matches · %dW-%dL (%d%%) · diff %s · %d goals · %d MVP"},
+	"discord.testTitle":     {"Rocket Tracker est connecté", "Rocket Tracker is connected"},
+	"discord.testText":      {"Les temps forts de %s arriveront ici.", "%s's highlights will show up here."},
 	"discord.weeklyTitle":   {"🏆 Classement de la semaine", "🏆 Leaderboard of the week"},
 	"discord.weeklyLine":    {"%d %% (%dV-%dD), diff %s/match", "%d%% (%dW-%dL), diff %s/match"},
 	"uninstall.done":        {"Démarrage automatique supprimé. Les données sont conservées dans %s", "Autostart removed. Your data is kept in %s"},

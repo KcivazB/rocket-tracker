@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,8 +24,25 @@ type Config struct {
 	// TiltStreak: consecutive losses in a session that suggest a break
 	// (desktop notification); 0 = no tilt alerts.
 	TiltStreak int `json:"tilt_streak"`
-	// DiscordOff: server mode, keep this player out of the Discord posts.
-	DiscordOff bool `json:"discord_off"`
+	// DiscordWebhook (server mode): the player's own Discord webhook, where
+	// their highlights, session recaps and the weekly leaderboard are posted
+	// ("" = nothing is posted). Never shown to the other players.
+	DiscordWebhook string `json:"discord_webhook"`
+}
+
+// ValidDiscordWebhook reports whether u is a Discord webhook URL (the server
+// only ever posts to Discord, never to an address a player typed).
+func ValidDiscordWebhook(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme != "https" || p.User != nil || p.Port() != "" {
+		return false
+	}
+	switch strings.ToLower(p.Hostname()) {
+	case "discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com":
+	default:
+		return false
+	}
+	return strings.HasPrefix(p.Path, "/api/webhooks/") && len(p.Path) > len("/api/webhooks/")
 }
 
 // Goal is the daily games objective shown in the calendar view.
@@ -68,6 +86,10 @@ func (c *Config) Normalize() {
 	case "1v1", "2v2", "3v3", "4v4", "all":
 	default:
 		c.Goal.Mode = d.Goal.Mode
+	}
+	c.DiscordWebhook = strings.TrimSpace(c.DiscordWebhook)
+	if c.DiscordWebhook != "" && !ValidDiscordWebhook(c.DiscordWebhook) {
+		c.DiscordWebhook = ""
 	}
 	if c.TiltStreak < 0 || c.TiltStreak > 10 {
 		c.TiltStreak = d.TiltStreak
