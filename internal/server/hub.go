@@ -17,6 +17,7 @@ import (
 	"rocket-tracker/internal/config"
 	"rocket-tracker/internal/setup"
 	"rocket-tracker/internal/store"
+	"rocket-tracker/internal/tilt"
 	"rocket-tracker/internal/tracker"
 )
 
@@ -399,7 +400,16 @@ func (s *Server) agentMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("match received", "user", u.Handle, "device", deviceFrom(r).Name, "id", m.ID, "mode", m.Mode, "result", m.Result)
-	writeJSON(w, http.StatusOK, map[string]int64{"id": m.ID})
+	resp := struct {
+		ID    int64       `json:"id"`
+		Alert *tilt.Alert `json:"alert,omitempty"` // break suggestion, shown by the agent
+	}{ID: m.ID}
+	if c.TiltStreak > 0 {
+		if ms, err := s.Store.User(u.ID).List(r.Context()); err == nil {
+			resp.Alert = tilt.Check(ms, c.TiltStreak, time.Now())
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ErrInvalidMatch wraps the reasons a match sent by an agent is refused.

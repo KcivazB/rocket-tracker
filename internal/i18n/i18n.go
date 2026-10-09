@@ -101,6 +101,12 @@ var messages = map[string][2]string{
 	"update.failed":         {"La mise à jour automatique a échoué : %s\n\nLa page de la nouvelle version va s'ouvrir pour la télécharger à la main.", "The automatic update failed: %s\n\nThe page of the new version will open so you can download it by hand."},
 	"update.restartFailed":  {"Mise à jour installée, mais Rocket Tracker n'a pas pu redémarrer : %s\nRelancez-le à la main.", "Update installed, but Rocket Tracker could not restart: %s\nStart it again by hand."},
 	"tray.quit":             {"Quitter Rocket Tracker", "Quit Rocket Tracker"},
+	"tilt.streakTitle":      {"%d défaites d'affilée", "%d losses in a row"},
+	"tilt.streakWorse":      {"Après %d défaites de suite, vous gagnez %d %% du match suivant (contre %d %% en moyenne). Une pause de 5 minutes ?", "After %d losses in a row, you win %d%% of the next match (vs %d%% on average). Time for a 5-minute break?"},
+	"tilt.streakOK":         {"Après %d défaites de suite, vous gagnez encore %d %% du match suivant (%d %% en moyenne) : pas de tilt chez vous, mais respirez un coup.", "After %d losses in a row, you still win %d%% of the next match (%d%% on average): no tilt for you, but take a breath."},
+	"tilt.streakNoData":     {"Pas encore assez d'historique pour savoir comment vous jouez après ça. Une pause de 5 minutes ?", "Not enough history yet to know how you play after this. Time for a 5-minute break?"},
+	"tilt.longTitle":        {"%d matchs dans cette session", "%d matches this session"},
+	"tilt.longText":         {"Au-delà de %d matchs d'affilée, vous gagnez %d %% (contre %d %% en moyenne). C'est peut-être le moment d'arrêter.", "Past %d matches in a row, you win %d%% (vs %d%% on average). Maybe time to stop."},
 	"uninstall.done":        {"Démarrage automatique supprimé. Les données sont conservées dans %s", "Autostart removed. Your data is kept in %s"},
 
 	"agent.title":        {"Rocket Tracker — agent", "Rocket Tracker — agent"},

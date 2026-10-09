@@ -15,6 +15,7 @@ import (
 
 	"rocket-tracker/internal/setup"
 	"rocket-tracker/internal/store"
+	"rocket-tracker/internal/tilt"
 	"rocket-tracker/internal/tracker"
 )
 
@@ -147,8 +148,13 @@ func (c *Client) Heartbeat(ctx context.Context, r Report) (*HeartbeatResponse, e
 }
 
 // SendMatch uploads a finished match; key makes it idempotent.
-func (c *Client) SendMatch(ctx context.Context, key string, m *store.Match) error {
-	return c.do(ctx, http.MethodPost, "/api/agent/matches", map[string]any{"key": key, "match": m}, nil)
+// It returns the break suggestion the server made, if any.
+func (c *Client) SendMatch(ctx context.Context, key string, m *store.Match) (*tilt.Alert, error) {
+	var out struct {
+		Alert *tilt.Alert `json:"alert"`
+	}
+	err := c.do(ctx, http.MethodPost, "/api/agent/matches", map[string]any{"key": key, "match": m}, &out)
+	return out.Alert, err
 }
 
 // SetManual uploads the games entered by hand for one day and mode.

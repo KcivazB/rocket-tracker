@@ -17,6 +17,7 @@ import (
 	"rocket-tracker/internal/i18n"
 	"rocket-tracker/internal/setup"
 	"rocket-tracker/internal/store"
+	"rocket-tracker/internal/tilt"
 	"rocket-tracker/internal/tracker"
 	"rocket-tracker/internal/winutil"
 )
@@ -97,9 +98,15 @@ func cmdAgentRun(args []string, console bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var desk *desktop // set below, before the agent runs
 	a := agent.New(cfg, agent.Options{
 		Client: newAgentClient(cfg), Outbox: outbox, Version: Version, ConfigPath: cfgPath,
 		Log: log.With("component", "agent"), Ini: cachedIni(cfg.RLInstallDir),
+		OnAlert: func(al *tilt.Alert) {
+			if desk != nil {
+				desk.Tilt(al)
+			}
+		},
 	})
 	tr := tracker.New(tracker.Options{
 		Log:            log.With("component", "tracker"),
@@ -112,7 +119,7 @@ func cmdAgentRun(args []string, console bool) error {
 	client := gameClient(log, tr, cfg.RLInstallDir, rlPort, g.rlPort > 0)
 	a.ConnStatus = client.Status
 	waitClient := runGameClient(ctx, stop, log, client)
-	desk := startDesktop(ctx, stop, log, cfg.Server)
+	desk = startDesktop(ctx, stop, log, cfg.Server)
 	defer desk.Stop()
 
 	log.Info("rocket tracker agent started", "version", Version, "server", cfg.Server, "data_dir", dataDir, "rl_port", client.Port)

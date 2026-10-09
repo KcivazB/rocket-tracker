@@ -19,6 +19,7 @@ import (
 
 	"rocket-tracker/internal/setup"
 	"rocket-tracker/internal/store"
+	"rocket-tracker/internal/tilt"
 	"rocket-tracker/internal/tracker"
 )
 
@@ -116,6 +117,7 @@ type Options struct {
 	Version    string
 	Log        *slog.Logger
 	ConfigPath string // agent.json, updated with the server's settings
+	OnAlert    func(*tilt.Alert) // break suggestion after a match (may be nil)
 }
 
 // Identity is the tracker's "who am I" (last settings from the server).
@@ -354,8 +356,11 @@ func (a *Agent) uploadPending(ctx context.Context) (int, error) {
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = a.Client.SendMatch(rctx, key, m)
+		alert, err := a.Client.SendMatch(rctx, key, m)
 		cancel()
+		if err == nil && alert != nil && a.OnAlert != nil {
+			go a.OnAlert(alert)
+		}
 		var rej *RejectedError
 		switch {
 		case errors.As(err, &rej):

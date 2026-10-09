@@ -19,7 +19,7 @@ func Import(ctx context.Context, c *Client, st *store.Store, progress func(done,
 		return 0, 0, err
 	}
 	for i, m := range ms {
-		if err := c.SendMatch(ctx, ImportKey(m), m); err != nil {
+		if _, err := c.SendMatch(ctx, ImportKey(m), m); err != nil {
 			return matches, 0, fmt.Errorf("match %d (%s): %w", m.ID, m.StartedAt.Format("2006-01-02 15:04"), err)
 		}
 		matches++

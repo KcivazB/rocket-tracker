@@ -39,7 +39,7 @@ import (
 )
 
 // Version is overridable with -ldflags "-X main.Version=...".
-var Version = "0.6.0"
+var Version = "0.7.0"
 
 func env(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {

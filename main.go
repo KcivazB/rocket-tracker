@@ -29,13 +29,14 @@ import (
 	"rocket-tracker/internal/sim"
 	"rocket-tracker/internal/statsapi"
 	"rocket-tracker/internal/store"
+	"rocket-tracker/internal/tilt"
 	"rocket-tracker/internal/tracker"
 	"rocket-tracker/internal/winutil"
 	"rocket-tracker/web"
 )
 
 // Version is the application version (overridable with -ldflags -X main.Version=...).
-var Version = "0.6.0"
+var Version = "0.7.0"
 
 type globals struct {
 	dataDir string
@@ -207,6 +208,7 @@ func cmdRun(args []string, console bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var desk *desktop // set below, before the game client can save matches
 	tr := tracker.New(tracker.Options{
 		Log: log.With("component", "tracker"),
 		Identity: func() tracker.Identity {
@@ -231,13 +233,23 @@ func cmdRun(args []string, console bool) error {
 			if err := st.Checkpoint(sctx); err != nil {
 				log.Warn("database checkpoint failed", "err", err)
 			}
+			if desk != nil {
+				go func() {
+					ms, err := st.List(context.Background())
+					if err != nil {
+						log.Warn("tilt check: cannot list matches", "err", err)
+						return
+					}
+					desk.Tilt(tilt.Check(ms, cfgMgr.Get().TiltStreak, time.Now()))
+				}()
+			}
 			return nil
 		},
 	})
 
 	client := gameClient(log, tr, cfg.RLInstallDir, rlPort, g.rlPort > 0)
 
-	desk := startDesktop(ctx, stop, log, fmt.Sprintf("http://localhost:%d", port))
+	desk = startDesktop(ctx, stop, log, fmt.Sprintf("http://localhost:%d", port))
 	defer desk.Stop()
 
 	srv := &server.Server{

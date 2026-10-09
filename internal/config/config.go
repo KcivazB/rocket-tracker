@@ -20,6 +20,9 @@ type Config struct {
 	DashboardPort int      `json:"dashboard_port"`
 	RLPort        int      `json:"rl_port"`
 	Goal          Goal     `json:"goal"`
+	// TiltStreak: consecutive losses in a session that suggest a break
+	// (desktop notification); 0 = no tilt alerts.
+	TiltStreak int `json:"tilt_streak"`
 }
 
 // Goal is the daily games objective shown in the calendar view.
@@ -37,7 +40,7 @@ const dateLayout = "2006-01-02"
 // Defaults returns the default configuration.
 func Defaults() Config {
 	return Config{PlayerNames: []string{}, PlayerIDs: []string{}, DefaultTag: "ranked", DashboardPort: 8765, RLPort: 49123,
-		Goal: Goal{Mode: "1v1", Daily: 10}}
+		Goal: Goal{Mode: "1v1", Daily: 10}, TiltStreak: 3}
 }
 
 // Normalize fixes invalid / missing values.
@@ -63,6 +66,9 @@ func (c *Config) Normalize() {
 	case "1v1", "2v2", "3v3", "4v4", "all":
 	default:
 		c.Goal.Mode = d.Goal.Mode
+	}
+	if c.TiltStreak < 0 || c.TiltStreak > 10 {
+		c.TiltStreak = d.TiltStreak
 	}
 	if c.Goal.Daily <= 0 || c.Goal.Daily > 200 {
 		c.Goal.Daily = d.Goal.Daily

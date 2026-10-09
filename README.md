@@ -30,6 +30,11 @@ and **Install the vX update** when a newer release is published on GitHub (check
 the local dashboard shows it too, with an **Install and restart** button). The update downloads the new
 `rltracker.exe`, checks it, replaces the running one and restarts; if it fails, the release page opens instead.
 
+**Tilt alert.** After a match, a Windows notification suggests a break when you lose several matches in a row
+in a session (3 by default, set in **Settings**, or off), quoting how you usually do after such a streak. It also
+fires once per session when you reach the number of matches past which your win rate usually drops. In
+self-hosted mode the server computes it from your history and the agent shows it.
+
 ## Self-hosted mode (server + agents)
 
 The server (`rltracker-server`, a Docker image) hosts the dashboard and the accounts. Each player runs the

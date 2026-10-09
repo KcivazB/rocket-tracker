@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -383,5 +384,37 @@ func TestOIDCSignIn(t *testing.T) {
 	resp, _ = c3.Get(e.ts.URL + "/auth/callback?code=x&state=forged")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("forged state: %d", resp.StatusCode)
+	}
+}
+
+func TestHubTiltAlert(t *testing.T) {
+	e := newHub(t, nil)
+	alice := e.devLogin(t, "Alice")
+	base := e.ts.URL
+	code, body := call(t, alice, "POST", base+"/api/devices", `{"name":"PC"}`)
+	var created struct {
+		Token string `json:"token"`
+	}
+	if code != 201 || json.Unmarshal([]byte(body), &created) != nil {
+		t.Fatalf("create device %d %s", code, body)
+	}
+	auth := []string{"Authorization", "Bearer " + created.Token, "Origin", ""}
+	send := func(i int, result string) string {
+		start := time.Now().Add(time.Duration(i*7-30) * time.Minute).UTC()
+		m := fmt.Sprintf(`{"key":"k%d","match":{"guid":"G%d","online":true,"started_at":%q,"ended_at":%q,"mode":"1v1","result":%q,"team_score":1,"opp_score":2}}`,
+			i, i, start.Format(time.RFC3339), start.Add(6*time.Minute).Format(time.RFC3339), result)
+		code, body := call(t, &http.Client{}, "POST", base+"/api/agent/matches", m, auth...)
+		if code != 200 {
+			t.Fatalf("upload %d %s", code, body)
+		}
+		return body
+	}
+	send(0, "win")
+	send(1, "loss")
+	if body := send(2, "loss"); strings.Contains(body, `"alert"`) {
+		t.Fatalf("alert after 2 losses: %s", body)
+	}
+	if body := send(3, "loss"); !strings.Contains(body, `"kind":"streak"`) || !strings.Contains(body, `"losses":3`) {
+		t.Fatalf("no alert after 3 losses: %s", body)
 	}
 }

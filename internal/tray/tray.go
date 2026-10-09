@@ -4,6 +4,7 @@ package tray
 
 import (
 	_ "embed"
+	"errors"
 	"runtime"
 	"sync"
 	"time"
@@ -96,4 +97,14 @@ func (t *Tray) Stop() {
 	case <-t.done:
 	case <-time.After(2 * time.Second):
 	}
+}
+
+// Notify shows a notification next to the icon.
+func (t *Tray) Notify(title, text string) error {
+	select {
+	case <-t.ready:
+	case <-time.After(10 * time.Second):
+		return errors.New("the tray icon could not be created")
+	}
+	return notify(title, text)
 }

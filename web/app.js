@@ -2655,12 +2655,20 @@
 
   /* ---------- settings ---------- */
   var currentConfig = null;
+  function tiltOptions(sel) {
+    var ns = [0, 2, 3, 4, 5];
+    if (ns.indexOf(sel) < 0) ns.push(sel); // a value set in config.json
+    return ns.map(function (n) {
+      return '<option value="' + n + '"' + (n === sel ? ' selected' : '') + '>' + esc(n ? tr('set.tiltN', { n: n }) : tr('set.tiltOff')) + '</option>';
+    }).join('');
+  }
   function openSettings() {
     var dlg = $('#settings');
     var form = $('#settings-form');
     var msg = $('#settings-msg');
     msg.textContent = tr('common.loading'); msg.className = 'form-msg';
     form.elements.default_tag.innerHTML = tagOptions('ranked');
+    form.elements.tilt_streak.innerHTML = tiltOptions(3);
     form.elements.lang.value = I18N.getLang();
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
     apiFetch('/api/config').then(function (c) {
@@ -2668,6 +2676,7 @@
       form.elements.player_names.value = (currentConfig.player_names || []).join(', ');
       form.elements.player_ids.value = (currentConfig.player_ids || []).join(', ');
       form.elements.default_tag.innerHTML = tagOptions(currentConfig.default_tag || 'ranked');
+      form.elements.tilt_streak.innerHTML = tiltOptions(isNum(currentConfig.tilt_streak) ? currentConfig.tilt_streak : 3);
       form.elements.rl_install_dir.value = currentConfig.rl_install_dir || '';
       var goal = Object.assign({}, GOAL_DEFAULT, currentConfig.goal || {});
       form.elements.goal_mode.value = goal.mode;
@@ -2690,6 +2699,7 @@
         player_names: split(form.elements.player_names.value),
         player_ids: split(form.elements.player_ids.value),
         default_tag: form.elements.default_tag.value,
+        tilt_streak: parseInt(form.elements.tilt_streak.value, 10) || 0,
         rl_install_dir: form.elements.rl_install_dir.value.trim(),
         goal: {
           mode: form.elements.goal_mode.value,

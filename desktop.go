@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"rocket-tracker/internal/i18n"
+	"rocket-tracker/internal/tilt"
 	"rocket-tracker/internal/tray"
 	"rocket-tracker/internal/update"
 	"rocket-tracker/internal/winutil"
@@ -156,4 +157,33 @@ func restartIfUpdated() {
 	if err := cmd.Start(); err != nil {
 		winutil.MessageBox("Rocket Tracker", i18n.Tf(lang, "update.restartFailed", err.Error()), true)
 	}
+}
+
+// Tilt shows the break suggestion of a tilt alert.
+func (d *desktop) Tilt(a *tilt.Alert) {
+	if a == nil {
+		return
+	}
+	title, text := tiltMessage(a)
+	d.log.Info("tilt alert", "kind", a.Kind, "losses", a.Losses, "matches", a.Matches, "win_rate", a.WinRate, "sample", a.Sample)
+	if err := d.tray.Notify(title, text); err != nil {
+		d.log.Warn("cannot show the notification", "err", err)
+	}
+}
+
+func tiltMessage(a *tilt.Alert) (title, text string) {
+	pct := func(f float64) int { return int(f*100 + 0.5) }
+	if a.Kind == "long_session" {
+		return i18n.Tf(lang, "tilt.longTitle", a.Matches), i18n.Tf(lang, "tilt.longText", a.Matches, pct(a.WinRate), pct(a.Baseline))
+	}
+	title = i18n.Tf(lang, "tilt.streakTitle", a.Losses)
+	switch {
+	case a.Sample < tilt.MinSample:
+		text = i18n.T(lang, "tilt.streakNoData")
+	case a.WinRate < a.Baseline-0.05:
+		text = i18n.Tf(lang, "tilt.streakWorse", a.Losses, pct(a.WinRate), pct(a.Baseline))
+	default:
+		text = i18n.Tf(lang, "tilt.streakOK", a.Losses, pct(a.WinRate), pct(a.Baseline))
+	}
+	return title, text
 }
