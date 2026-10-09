@@ -77,6 +77,9 @@ func healthcheck() error {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "import" {
+		return cmdImport(args[1:], os.Stdout)
+	}
 	if len(args) > 0 && args[0] == "healthcheck" {
 		return healthcheck()
 	}

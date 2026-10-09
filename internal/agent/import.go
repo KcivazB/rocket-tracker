@@ -3,16 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"rocket-tracker/internal/store"
 )
 
 // ImportKey identifies a match of a local database on the server, so that
 // running the import again updates instead of duplicating.
-func ImportKey(m *store.Match) string {
-	return "import:" + m.GUID + ":" + strconv.FormatInt(m.StartedAt.Unix(), 10)
-}
+func ImportKey(m *store.Match) string { return store.ImportKey(m) }
 
 // Import uploads the matches and hand-entered games of a local database
 // (the one `rltracker run` fills) to the server.

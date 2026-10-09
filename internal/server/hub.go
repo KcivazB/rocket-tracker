@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -162,8 +163,13 @@ func (s *Server) hubRoutes(mux *http.ServeMux) {
 
 // userSettings returns a user's settings (identity, default tag, season goal).
 func (s *Server) userSettings(ctx context.Context, uid int64) (config.Config, error) {
+	return UserSettings(ctx, s.Store, uid)
+}
+
+// UserSettings returns the settings of an account (defaults when unset).
+func UserSettings(ctx context.Context, st *store.Store, uid int64) (config.Config, error) {
 	c := config.Defaults()
-	raw, err := s.Store.UserSettings(ctx, uid)
+	raw, err := st.UserSettings(ctx, uid)
 	if err != nil {
 		return c, err
 	}
@@ -379,38 +385,47 @@ func (s *Server) agentMatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	m := body.Match
-	switch {
-	case m == nil:
-		writeErr(w, http.StatusBadRequest, "missing match")
-		return
-	case len(body.Key) > 200:
-		writeErr(w, http.StatusBadRequest, "key too long")
-		return
-	case m.Result != "win" && m.Result != "loss" && m.Result != "abandoned":
-		writeErr(w, http.StatusBadRequest, "result must be win, loss or abandoned")
-		return
-	case m.StartedAt.IsZero() || m.EndedAt.Before(m.StartedAt):
-		writeErr(w, http.StatusBadRequest, "invalid match times")
+	u, m := userFrom(r), body.Match
+	c, err := s.userSettings(r.Context(), u.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	u, ctx := userFrom(r), r.Context()
-	m.ID = 0
-	m.Tag = strings.ToLower(strings.TrimSpace(m.Tag))
-	if !store.ValidTag(m.Tag) {
-		c, err := s.userSettings(ctx, u.ID)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		m.Tag = c.DefaultTag
-	}
-	if err := s.Store.User(u.ID).Ingest(ctx, m, body.Key); err != nil {
+	if err := IngestAgentMatch(r.Context(), s.Store.User(u.ID), c.DefaultTag, body.Key, m); errors.Is(err, ErrInvalidMatch) {
+		writeErr(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), ErrInvalidMatch.Error()+": "))
+		return
+	} else if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.Log.Info("match received", "user", u.Handle, "device", deviceFrom(r).Name, "id", m.ID, "mode", m.Mode, "result", m.Result)
 	writeJSON(w, http.StatusOK, map[string]int64{"id": m.ID})
+}
+
+// ErrInvalidMatch wraps the reasons a match sent by an agent is refused.
+var ErrInvalidMatch = errors.New("invalid match")
+
+// IngestAgentMatch checks a match sent by an agent (or imported from a gaming
+// PC's files) and stores it in sc, with defaultTag when it has no valid tag.
+// key identifies the agent's copy: the same key again updates instead of
+// duplicating.
+func IngestAgentMatch(ctx context.Context, sc *store.Scope, defaultTag, key string, m *store.Match) error {
+	switch {
+	case m == nil:
+		return fmt.Errorf("%w: missing match", ErrInvalidMatch)
+	case len(key) > 200:
+		return fmt.Errorf("%w: key too long", ErrInvalidMatch)
+	case m.Result != "win" && m.Result != "loss" && m.Result != "abandoned":
+		return fmt.Errorf("%w: result must be win, loss or abandoned", ErrInvalidMatch)
+	case m.StartedAt.IsZero() || m.EndedAt.Before(m.StartedAt):
+		return fmt.Errorf("%w: invalid match times", ErrInvalidMatch)
+	}
+	m.ID = 0
+	m.Tag = strings.ToLower(strings.TrimSpace(m.Tag))
+	if !store.ValidTag(m.Tag) {
+		m.Tag = defaultTag
+	}
+	return sc.Ingest(ctx, m, key)
 }
 
 // ---------------------------------------------------------------- devices

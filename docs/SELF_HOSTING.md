@@ -107,6 +107,18 @@ Each player:
    `rltracker agent setup --server https://rl.example.com --token rtk_…`;
 3. optionally uploads their old local matches: `rltracker agent import`.
 
+**Offline import.** When a gaming PC and the server never run at the same time (same machine, dual boot…), the
+agent's matches stay queued on the PC. Copy `%APPDATA%\RocketTrackerltracker.db` (local mode) and/or the `.json`
+files of `%APPDATA%\RocketTracker\outbox\`, then either click **Import** in the dashboard and pick them, or put
+them in `data/import/` and run:
+
+```bash
+docker compose run --rm rocket-tracker import --user <handle> /data/import/rltracker.db /data/import/outbox
+```
+
+Importing the same files again updates the matches instead of duplicating them. Once imported, the `.json` files
+can be deleted from the PC's `outbox\` (the agent would otherwise send them again, harmlessly, at its next connection).
+
 A player can register several PCs. The status pill shows whether an agent is online and connected to the game;
 the Players page shows who is in a match right now.
 

@@ -2457,6 +2457,7 @@
     $('#view-match').hidden = view !== 'match';
     $('#view-players').hidden = view !== 'players';
     $('#export-csv').href = apiBase() + '/export.csv';
+    $('#import-btn').hidden = readOnly();
     $('#recent-all').href = href('history');
     $$('[data-goal-edit]').forEach(function (el) { el.hidden = readOnly(); });
     if (view !== 'dash') {
@@ -2532,6 +2533,38 @@
     return apiFetch(apiBase() + '/config').then(function (c) { if (gen === state.gen) state.config = c || null; })
       .catch(function (e) { console.warn('config', e); });
   }
+  /** Import button: uploads rltracker.db and/or agent outbox .json files copied from the gaming PC. */
+  function bindImport() {
+    var btn = $('#import-btn'), input = $('#import-file');
+    btn.addEventListener('click', function () {
+      if (MOCK) { toast(tr('toast.noImportDemo')); return; }
+      input.value = '';
+      input.click();
+    });
+    input.addEventListener('change', function () {
+      if (!input.files || !input.files.length) return;
+      var fd = new FormData();
+      Array.prototype.forEach.call(input.files, function (f) { fd.append('file', f, f.name); });
+      btn.disabled = true;
+      toast(tr('toast.importing'));
+      fetch('/api/import', { method: 'POST', body: fd, cache: 'no-store' }).then(function (r) {
+        return r.text().then(function (txt) {
+          var data = null;
+          try { data = JSON.parse(txt); } catch (e) { /* not JSON */ }
+          if (!r.ok) throw new Error('HTTP ' + r.status + (data && data.error ? ' : ' + data.error : ''));
+          return data || {};
+        });
+      }).then(function (res) {
+        var skipped = (res.skipped || []).length;
+        if (skipped) console.warn('import skipped', res.skipped);
+        toast(tr('toast.imported', { n: res.matches || 0, m: res.manual || 0 }) + (skipped ? ' · ' + tr('toast.importSkipped', { v: skipped }) : ''), skipped > 0 && !res.matches);
+        loadAll();
+      }).catch(function (e) {
+        toast(tr('toast.importFailed', { v: e.message }), true);
+      }).then(function () { btn.disabled = false; });
+    });
+  }
+
   /** (Re)loads everything for the player of the current route. */
   function loadAll() {
     state.dataFor = state.route.player || '';
@@ -2984,6 +3017,7 @@
     if (MOCK) {
       $('#export-csv').addEventListener('click', function (e) { e.preventDefault(); toast(tr('toast.noCsvDemo')); });
     }
+    bindImport();
     if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: light)');
       var onTheme = function () { renderAll(); renderStatus(); };

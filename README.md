@@ -45,7 +45,10 @@ agent on their gaming PC; it sends the finished matches and the live state to th
    Running it again does not create duplicates.
 
 When the server is unreachable, the agent keeps finished matches in `%APPDATA%\RocketTracker\outbox\` and
-uploads them as soon as it is back. Revoking a device in the dashboard cuts its access immediately; matches already
+uploads them as soon as it is back. If the PC and the server never run at the same time, copy
+`%APPDATA%\RocketTracker
+ltracker.db` and/or the `.json` files of `outbox\` and import them later with the
+**Import** button of the dashboard (or `rltracker-server import`, see the self-hosting guide). Revoking a device in the dashboard cuts its access immediately; matches already
 sent are kept.
 
 ## The dashboard
@@ -82,6 +85,7 @@ French and the English version; `go test ./...` checks that none is missing.
 | `rltracker open` | opens the dashboard (local, or the server in agent mode) |
 | `rltracker uninstall` | removes the autostart (data is kept) |
 | `rltracker simulate` | fake game server to test without Rocket League |
+| `rltracker-server import --user HANDLE PATH...` | imports files copied from a gaming PC (`rltracker.db`, the `outbox` folder or its `.json` files) |
 | `rltracker-server` | the self-hosted server (configured with `RT_*` environment variables, see the guide) |
 
 CSV export (Excel-friendly `;` separator and decimal commas, or `?sep=,`): **Export CSV** button, or `/api/export.csv`.

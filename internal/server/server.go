@@ -60,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.putConfig)
 	mux.HandleFunc("GET /api/manual", s.listManual)
 	mux.HandleFunc("PUT /api/manual/{day}/{mode}", s.putManual)
+	mux.HandleFunc("POST /api/import", s.importFiles)
 	if s.Hub != nil {
 		s.hubRoutes(mux)
 	}

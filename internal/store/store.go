@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -437,4 +438,11 @@ func ValidTag(t string) bool {
 		return true
 	}
 	return false
+}
+
+// ImportKey identifies a match of a local database once imported on a server
+// (`rltracker agent import`, or a file import), so that importing it again
+// updates instead of duplicating.
+func ImportKey(m *Match) string {
+	return "import:" + m.GUID + ":" + strconv.FormatInt(m.StartedAt.Unix(), 10)
 }
