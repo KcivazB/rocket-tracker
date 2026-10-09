@@ -26,8 +26,9 @@ It runs in one of two ways:
 Data: `%APPDATA%\RocketTracker\` (`rltracker.db` SQLite, `config.json`, `rltracker.log`).
 
 The tracker (and the agent) shows an icon in the notification area, next to the clock: open the dashboard, quit,
-and **Update available** when a newer release is published on GitHub (checked at start, then every 12 hours;
-the dashboard shows it too). To update, quit from the icon, replace `rltracker.exe` and start it again.
+and **Install the vX update** when a newer release is published on GitHub (checked at start, then every 12 hours;
+the local dashboard shows it too, with an **Install and restart** button). The update downloads the new
+`rltracker.exe`, checks it, replaces the running one and restarts; if it fails, the release page opens instead.
 
 ## Self-hosted mode (server + agents)
 

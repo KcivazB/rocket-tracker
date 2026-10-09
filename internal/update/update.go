@@ -19,9 +19,13 @@ const LatestURL = "https://api.github.com/repos/KcivazB/rocket-tracker/releases/
 
 // Release is a published release newer than the running version.
 type Release struct {
-	Version string `json:"version"` // without the leading "v"
-	URL     string `json:"url"`     // release page
+	Version  string `json:"version"` // without the leading "v"
+	URL      string `json:"url"`     // release page
+	Download string `json:"-"`       // the Asset file, "" when the release lacks it
 }
+
+// Asset is the release file of the desktop app.
+const Asset = "rltracker.exe"
 
 // Checker polls the latest release in the background.
 type Checker struct {
@@ -109,6 +113,10 @@ func (c *Checker) fetch(ctx context.Context) (*Release, error) {
 		URL        string `json:"html_url"`
 		Draft      bool   `json:"draft"`
 		Prerelease bool   `json:"prerelease"`
+		Assets     []struct {
+			Name string `json:"name"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, err
@@ -116,7 +124,13 @@ func (c *Checker) fetch(ctx context.Context) (*Release, error) {
 	if body.Draft || body.Prerelease {
 		return nil, fmt.Errorf("latest release %s is not final", body.Tag)
 	}
-	return &Release{Version: strings.TrimPrefix(body.Tag, "v"), URL: body.URL}, nil
+	r := &Release{Version: strings.TrimPrefix(body.Tag, "v"), URL: body.URL}
+	for _, a := range body.Assets {
+		if strings.EqualFold(a.Name, Asset) {
+			r.Download = a.URL
+		}
+	}
+	return r, nil
 }
 
 // IsNewer reports whether version a (x.y.z, optional "v") is above b.

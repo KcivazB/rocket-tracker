@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +40,10 @@ type Server struct {
 	Hub        *Hub                   // non-nil: multi-user server mode
 	TempDir    string                 // uploaded databases are written here ("" = the system temp dir)
 	Update     func() *update.Release // local mode: the newer release found, or nil; may be nil
+	// Local mode, may be nil: InstallUpdate downloads the newer release over the
+	// executable, Restart then stops the app so that it starts the new version.
+	InstallUpdate func() error
+	Restart       func()
 
 	iniMu   sync.Mutex
 	iniAt   time.Time
@@ -64,6 +69,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/manual", s.listManual)
 	mux.HandleFunc("PUT /api/manual/{day}/{mode}", s.putManual)
 	mux.HandleFunc("POST /api/import", s.importFiles)
+	if s.Hub == nil && s.InstallUpdate != nil {
+		mux.HandleFunc("POST /api/update/install", s.installUpdate)
+	}
 	if s.Hub != nil {
 		s.hubRoutes(mux)
 	}
@@ -205,6 +213,37 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		st.Update = s.Update()
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// installUpdate installs the newer release, answers, then restarts the app.
+func (s *Server) installUpdate(w http.ResponseWriter, r *http.Request) {
+	if !localOrigin(r) {
+		writeErr(w, http.StatusForbidden, "cross-origin request refused")
+		return
+	}
+	if err := s.InstallUpdate(); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if s.Restart != nil {
+		time.AfterFunc(500*time.Millisecond, s.Restart) // let the answer reach the dashboard
+	}
+}
+
+// localOrigin reports whether a request comes from the local dashboard and not
+// from another site open in the browser (CSRF).
+func localOrigin(r *http.Request) bool {
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil {
+			return false
+		}
+		h := strings.ToLower(u.Hostname())
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	sf := r.Header.Get("Sec-Fetch-Site")
+	return sf == "" || sf == "same-origin" || sf == "none"
 }
 
 func (s *Server) listMatches(w http.ResponseWriter, r *http.Request) {

@@ -159,6 +159,7 @@ button, input, select { font: inherit; color: inherit; }
 .warning.info .w-icon { background: var(--surface-3); color: var(--text-2); }
 .warning strong { display: block; }
 .warning p { margin: 2px 0 0; color: var(--text-2); }
+.warning p.w-actions { margin-top: 8px; }
 
 .live { margin-top: 14px; padding: 14px 18px; border-radius: var(--radius); border: 1px solid var(--border-strong);
   background: linear-gradient(90deg, var(--us-soft), transparent 35%, transparent 65%, var(--them-soft)), var(--surface);

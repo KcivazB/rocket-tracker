@@ -30,14 +30,12 @@ import (
 	"rocket-tracker/internal/statsapi"
 	"rocket-tracker/internal/store"
 	"rocket-tracker/internal/tracker"
-	"rocket-tracker/internal/tray"
-	"rocket-tracker/internal/update"
 	"rocket-tracker/internal/winutil"
 	"rocket-tracker/web"
 )
 
 // Version is the application version (overridable with -ldflags -X main.Version=...).
-var Version = "0.5.0"
+var Version = "0.6.0"
 
 type globals struct {
 	dataDir string
@@ -137,6 +135,7 @@ func main() {
 		}
 		os.Exit(1)
 	}
+	restartIfUpdated()
 }
 
 func newFlagSet(name string) *flag.FlagSet {
@@ -238,12 +237,13 @@ func cmdRun(args []string, console bool) error {
 
 	client := gameClient(log, tr, cfg.RLInstallDir, rlPort, g.rlPort > 0)
 
-	updates, stopTray := startTray(ctx, stop, log, fmt.Sprintf("http://localhost:%d", port))
-	defer stopTray()
+	desk := startDesktop(ctx, stop, log, fmt.Sprintf("http://localhost:%d", port))
+	defer desk.Stop()
 
 	srv := &server.Server{
 		Version: Version, Store: st, Config: cfgMgr, Tracker: tr, ConnStatus: client.Status,
-		Static: web.FS, Log: log.With("component", "http"), Update: updates.Newer,
+		Static: web.FS, Log: log.With("component", "http"),
+		Update: desk.Newer, InstallUpdate: desk.Install, Restart: desk.Restart,
 	}
 
 	waitClient := runGameClient(ctx, stop, log, client)
@@ -266,39 +266,6 @@ func cmdRun(args []string, console bool) error {
 	tr.Flush()
 	log.Info("rocket tracker stopped")
 	return nil
-}
-
-// startTray shows the notification-area icon (open, update, quit) and checks
-// for a newer release in the background. quit stops the app; the returned
-// function removes the icon.
-func startTray(ctx context.Context, quit context.CancelFunc, log *slog.Logger, openURL string) (*update.Checker, func()) {
-	t := tray.Start(tray.Options{
-		Tooltip:   "Rocket Tracker " + Version,
-		OpenTitle: i18n.T(lang, "tray.open"),
-		OnOpen: func() {
-			if err := winutil.OpenURL(openURL); err != nil {
-				log.Warn("cannot open the browser", "err", err)
-			}
-		},
-		QuitTitle: i18n.T(lang, "tray.quit"),
-		OnQuit: func() {
-			log.Info("quit from the tray icon")
-			quit()
-		},
-	})
-	uc := &update.Checker{
-		Current: Version,
-		Log:     log.With("component", "update"),
-		OnNewer: func(r update.Release) {
-			t.ShowUpdate(i18n.Tf(lang, "tray.update", r.Version), func() {
-				if err := winutil.OpenURL(r.URL); err != nil {
-					log.Warn("cannot open the browser", "err", err)
-				}
-			})
-		},
-	}
-	go uc.Run(ctx)
-	return uc, t.Stop
 }
 
 // gameClient builds the Stats API client feeding tr. The ports written in the

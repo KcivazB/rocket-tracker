@@ -232,3 +232,38 @@ func TestManualAPI(t *testing.T) {
 		t.Fatalf("after delete %s", body)
 	}
 }
+
+func TestInstallUpdate(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	installed := 0
+	restarted := make(chan struct{}, 1)
+	s := &Server{Version: "0.5.0", Store: st,
+		InstallUpdate: func() error { installed++; return nil },
+		Restart:       func() { restarted <- struct{}{} }}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	post := func(origin string) int {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/update/install", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post("https://evil.example"); code != http.StatusForbidden || installed != 0 {
+		t.Fatalf("cross-origin: %d, installed %d", code, installed)
+	}
+	if code := post("http://localhost:8765"); code != http.StatusOK || installed != 1 {
+		t.Fatalf("local: %d, installed %d", code, installed)
+	}
+	<-restarted
+}

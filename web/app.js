@@ -2395,7 +2395,9 @@
         w.push(warning('i', tr('st.waitingTitle'), tr('st.waitingText'), true));
       }
       if (s.update && s.update.version) {
-        w.push(warning('i', tr('st.updateTitle', { v: s.update.version }), tr('st.updateText', { cur: esc(stripV(s.version)), url: esc(s.update.url || RELEASES_URL) }), true));
+        w.push(warning('i', tr('st.updateTitle', { v: s.update.version }), tr('st.updateText', { cur: esc(stripV(s.version)), url: esc(s.update.url || RELEASES_URL) }) +
+          '</p><p class="w-actions"><button type="button" class="btn" data-install-update' + (state.installing ? ' disabled' : '') + '>' +
+          tr(state.installing ? 'st.updateInstalling' : 'st.updateInstall') + '</button>', true));
       }
     }
     $('#warnings').innerHTML = w.join('');
@@ -2533,6 +2535,9 @@
     var gen = state.gen;
     return apiFetch(apiBase() + '/status').then(function (s) {
       if (gen !== state.gen) return;
+      // A new version started (update installed): load its dashboard.
+      if (s && s.version && state.version && s.version !== state.version) { location.reload(); return; }
+      if (s && s.version) state.version = s.version;
       state.status = s; state.statusError = false;
       renderStatus();
       if (s && isNum(s.match_count)) {
@@ -2979,10 +2984,24 @@
       }).join('') + '</ul>' : '<p class="muted small">' + tr('dev.none') + '</p>';
     }).catch(function (e) { box.innerHTML = '<p class="form-msg err">' + tr('dev.listFailed', { v: esc(e.message) }) + '</p>'; });
   }
+  /** Local mode: installs the newer release; the app restarts and pollStatus reloads the page. */
+  function installUpdate() {
+    if (state.installing || MOCK) return;
+    state.installing = true;
+    renderStatus();
+    apiFetch('/api/update/install', { method: 'POST' }).then(function () {
+      toast(tr('toast.restarting'));
+    }).catch(function (e) {
+      state.installing = false;
+      renderStatus();
+      toast(tr('toast.installFailed', { v: e.message }), true);
+    });
+  }
   function bindDevices() {
     var dlg = $('#devices'), form = $('#devices-form');
     document.addEventListener('click', function (e) {
       if (e.target.closest('[data-open-devices]')) { e.preventDefault(); openDevices(); }
+      if (e.target.closest('[data-install-update]')) { e.preventDefault(); installUpdate(); }
     });
     $$('[data-close]', dlg).forEach(function (b) { b.addEventListener('click', function () { dlg.close ? dlg.close() : dlg.removeAttribute('open'); }); });
     form.addEventListener('submit', function (e) {

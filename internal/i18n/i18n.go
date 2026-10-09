@@ -97,7 +97,9 @@ var messages = map[string][2]string{
 	"setup.dashboard":       {"Tableau de bord : %s", "Dashboard: %s"},
 	"error.box":             {"Erreur : %s", "Error: %s"},
 	"tray.open":             {"Ouvrir le tableau de bord", "Open the dashboard"},
-	"tray.update":           {"Mise à jour disponible : v%s", "Update available: v%s"},
+	"tray.update":           {"Installer la mise à jour v%s", "Install the v%s update"},
+	"update.failed":         {"La mise à jour automatique a échoué : %s\n\nLa page de la nouvelle version va s'ouvrir pour la télécharger à la main.", "The automatic update failed: %s\n\nThe page of the new version will open so you can download it by hand."},
+	"update.restartFailed":  {"Mise à jour installée, mais Rocket Tracker n'a pas pu redémarrer : %s\nRelancez-le à la main.", "Update installed, but Rocket Tracker could not restart: %s\nStart it again by hand."},
 	"tray.quit":             {"Quitter Rocket Tracker", "Quit Rocket Tracker"},
 	"uninstall.done":        {"Démarrage automatique supprimé. Les données sont conservées dans %s", "Autostart removed. Your data is kept in %s"},
 
