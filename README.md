@@ -30,6 +30,13 @@ and **Install the vX update** when a newer release is published on GitHub (check
 the local dashboard shows it too, with an **Install and restart** button). The update downloads the new
 `rltracker.exe`, checks it, replaces the running one and restarts; if it fails, the release page opens instead.
 
+**Several Rocket League accounts.** Each account you play on is a profile (found from the matches, by
+platform id). With two or more, a selector at the top of the dashboard picks the account shown, or **All my
+accounts**: every stat, the history, the ranks and the sessions follow it. The default is the account of
+**Settings → Platform id(s)**; games entered by hand count with it. The tilt alert and the Discord posts use
+the history of the account just played, and the server leaderboards only count the accounts listed in your
+settings (all of them when none is).
+
 **Rank & MMR.** The Stats API gives neither, so you note them: **Note my rank** on the dashboard (rank with
 tier and division, MMR, or both, per playlist). The dashboard shows your current rank per playlist with its
 badge, the MMR change, and the MMR curve. When a session ends (30 minutes after the last match), the tray icon

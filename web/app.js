@@ -975,6 +975,9 @@
     filtered: [],
     shared: {},       // server mode: match id -> other accounts that recorded it
     ranks: [],        // rank / MMR entries of the viewed player, oldest first
+    allRaw: [],       // every match of the viewed player, all accounts (state.all = the shown profile's, annotated)
+    profiles: [],     // the viewed player's Rocket League accounts, most played first
+    profile: 'all',   // the account shown: a profileKey or 'all'
     rankPl: null,     // playlist shown in the MMR chart
     sharedCopies: {}, // apiBase/id -> their records of that match (match page)
     filters: loadFilters(),
@@ -1105,7 +1108,12 @@
     return ready.then(function () {
       var m;
       if (path === '/api/session') return { mode: 'local', version: '0.1.0-mock' };
-      if (path === '/api/matches' && method === 'GET') return JSON.parse(JSON.stringify(mock.matches));
+      if (path === '/api/matches' && method === 'GET') {
+        var copy = JSON.parse(JSON.stringify(mock.matches));
+        // Demo of several accounts (?mockalt=1): every 4th match on a second account.
+        if (params.get('mockalt')) copy.forEach(function (x, i) { if (i % 4 === 3 && x.me) { x.me.name = 'VirgSmurf'; x.me.primary_id = 'Steam|76561190000999999|0'; } });
+        return copy;
+      }
       if ((m = path.match(/^\/api\/matches\/(\d+)$/))) {
         var id = +m[1];
         var idx = mock.matches.findIndex(function (x) { return x.id === id; });
@@ -1294,6 +1302,92 @@
   function hasData(arr) { return arr.some(function (v) { return v != null; }); }
   function wlShort(w, l) { return tr('wl.short', { w: w, l: l }); }
 
+  /* ---------- profiles: the player's Rocket League accounts ---------- */
+  /** Same as store.ProfileKey: the account a match was played on. */
+  function profileKey(m) {
+    var me = m.me || {};
+    var id = String(me.primary_id || '').trim().toLowerCase();
+    if (id) return id;
+    var n = String(me.name || '').trim().toLowerCase();
+    return n ? 'name:' + n : '';
+  }
+  function platformLabel(key) {
+    var p = key.indexOf('name:') === 0 ? '' : key.split('|')[0];
+    var names = { epic: 'Epic', steam: 'Steam', ps4: 'PlayStation', ps5: 'PlayStation', psn: 'PlayStation', xboxone: 'Xbox', xbox: 'Xbox', xbl: 'Xbox', switch: 'Switch' };
+    return names[p] || '';
+  }
+  function computeProfiles(ms) {
+    var by = {};
+    ms.forEach(function (m) {
+      var k = profileKey(m);
+      var p = by[k] || (by[k] = { key: k, name: '', n: 0, last: 0 });
+      p.n++;
+      var t = startMs(m);
+      if (t >= p.last) { p.last = t; p.name = (m.me && m.me.name) || p.name; }
+    });
+    return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return b.n - a.n || b.last - a.last; });
+  }
+  /** The main account: the first platform id (or name) of the settings that has matches, else the most played. */
+  function mainProfile() {
+    var c = !state.dataFor ? state.config : null, keys = state.profiles.map(function (p) { return p.key; });
+    var wanted = c ? (c.player_ids || []).map(function (x) { return String(x).trim().toLowerCase(); })
+      .concat((c.player_names || []).map(function (x) { return 'name:' + String(x).trim().toLowerCase(); })) : [];
+    for (var i = 0; i < wanted.length; i++) if (keys.indexOf(wanted[i]) >= 0) return wanted[i];
+    return keys[0] || '';
+  }
+  function profileStoreKey() { return 'rt.profile.' + (state.dataFor || 'me'); }
+  /** Rebuilds the account list after the matches changed and shows the chosen account. */
+  function setupProfiles() {
+    state.profiles = computeProfiles(state.allRaw);
+    var keys = state.profiles.map(function (p) { return p.key; });
+    var saved = null;
+    try { saved = localStorage.getItem(profileStoreKey()); } catch (e) { /* storage unavailable */ }
+    var cur = state.profileFor === (state.dataFor || '') ? state.profile : saved;
+    if (cur !== 'all' && keys.indexOf(cur) < 0) cur = state.profiles.length > 1 ? mainProfile() : 'all';
+    state.profileFor = state.dataFor || '';
+    applyProfile(state.profiles.length > 1 ? cur : 'all');
+  }
+  function applyProfile(key) {
+    state.profile = key;
+    state.all = annotate(key === 'all' ? state.allRaw : state.allRaw.filter(function (m) { return profileKey(m) === key; }));
+    renderProfileSwitch();
+  }
+  function selectProfile(key) {
+    try { localStorage.setItem(profileStoreKey(), key); } catch (e) { /* storage unavailable */ }
+    state.shown = PAGE_SIZE;
+    applyProfile(key);
+    renderAll();
+  }
+  function profileName(key) {
+    var p = state.profiles.filter(function (x) { return x.key === key; })[0];
+    return p ? p.name || key : key;
+  }
+  function renderProfileSwitch() {
+    var box = $('#profile-switch'), sel = $('#profile-sel');
+    box.hidden = state.profiles.length < 2;
+    if (box.hidden) return;
+    sel.innerHTML = state.profiles.map(function (p) {
+      var plat = platformLabel(p.key);
+      return '<option value="' + esc(p.key) + '"' + (p.key === state.profile ? ' selected' : '') + '>' + esc((p.name || p.key) + (plat ? ' · ' + plat : '')) +
+        ' (' + esc(plural(p.n, 'match')) + ')</option>';
+    }).join('') + '<option value="all"' + (state.profile === 'all' ? ' selected' : '') + '>' + esc(tr(state.dataFor ? 'profile.allTheirs' : 'profile.all')) + '</option>';
+  }
+  /** Manual games have no account: they count with the main one (and in "all"). */
+  function profileManual() {
+    return state.profile === 'all' || state.profiles.length < 2 || state.profile === mainProfile() ? state.manual : [];
+  }
+  /** Platform id of one of the viewed player's own accounts? (marked in the teammates). */
+  function isOwnAccount(pid) {
+    var k = String(pid || '').trim().toLowerCase();
+    return !!k && state.profiles.some(function (p) { return p.key === k; });
+  }
+  /** Ranks of the shown account (older entries without one go to the main account). */
+  function profileRanks() {
+    if (state.profile === 'all' || state.profiles.length < 2) return state.ranks || [];
+    var main = mainProfile();
+    return (state.ranks || []).filter(function (r) { return r.profile === state.profile || (!r.profile && state.profile === main); });
+  }
+
   /* ---------- ranks & MMR (noted by the player) ---------- */
   // tier: 0 unranked, 1-21 Bronze I .. Grand Champion III, 22 Supersonic Legend; division 1-4.
   var PLAYLISTS = ['1v1', '2v2', '3v3', 'hoops', 'rumble', 'dropshot', 'snowday', 'tournament'];
@@ -1380,7 +1474,7 @@
     var sec = $('#rank-section');
     if (!sec) return;
     var own = !readOnly();
-    var rs = state.ranks || [];
+    var rs = profileRanks();
     sec.hidden = !state.loaded || (!rs.length && !own);
     if (sec.hidden) return;
     $('#rank-add').hidden = !own;
@@ -1411,13 +1505,13 @@
     if (!withMmr.length) { if (charts['c-mmr']) { charts['c-mmr'].destroy(); delete charts['c-mmr']; } return; }
     if (withMmr.indexOf(state.rankPl) < 0) {
       // Default: the playlist noted most recently.
-      var last = (state.ranks || []).filter(function (r) { return isNum(r.mmr); }).pop();
+      var last = profileRanks().filter(function (r) { return isNum(r.mmr); }).pop();
       state.rankPl = last ? last.playlist : withMmr[0];
     }
     $('#rank-pl').innerHTML = withMmr.map(function (p) {
       return '<button type="button" role="radio" data-rank-pl="' + p + '" aria-checked="' + (p === state.rankPl) + '">' + esc(playlistLabel(p)) + '</button>';
     }).join('');
-    var pts = state.ranks.filter(function (r) { return r.playlist === state.rankPl && isNum(r.mmr); });
+    var pts = profileRanks().filter(function (r) { return r.playlist === state.rankPl && isNum(r.mmr); });
     makeChart('c-mmr', {
       type: 'line',
       data: { datasets: [{ label: 'MMR', data: pts.map(function (r) { return { x: r._t, y: r.mmr }; }), borderColor: T.us, backgroundColor: alpha(T.us, 0.10),
@@ -1459,7 +1553,7 @@
     var start = ms[i]._t, count = {};
     ms.slice(i).forEach(function (m) { var p = matchPlaylist(m); count[p] = (count[p] || 0) + 1; });
     var noted = {};
-    (state.ranks || []).forEach(function (r) { if (r._t >= start) noted[r.playlist] = true; });
+    profileRanks().forEach(function (r) { if (r._t >= start) noted[r.playlist] = true; });
     var todo = PLAYLISTS.filter(function (p) { return count[p] && !noted[p]; });
     return todo.length ? { start: start, todo: todo, count: count } : null;
   }
@@ -1483,12 +1577,13 @@
     var pl = playlist || state.rankPl || '2v2';
     f.elements.playlist.innerHTML = PLAYLISTS.map(function (p) { return '<option value="' + p + '"' + (p === pl ? ' selected' : '') + '>' + esc(playlistLabel(p)) + '</option>'; }).join('');
     prefillRank(pl);
+    $('#rank-account').textContent = state.profiles.length > 1 ? tr('profile.forAccount', { v: profileName(state.profile === 'all' ? mainProfile() : state.profile) }) : '';
     $('#rank-msg').textContent = '';
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
   }
   /** Starts from the last entry of the playlist: usually only the division or the MMR changed. */
   function prefillRank(pl) {
-    var s = rankSummary(state.ranks || []).filter(function (x) { return x.playlist === pl; })[0];
+    var s = rankSummary(profileRanks()).filter(function (x) { return x.playlist === pl; })[0];
     var tier = s && isNum(s.tier) ? s.tier : null;
     rankForm = { family: tier == null ? null : rankFamily(tier), level: tier == null ? 1 : rankLevel(tier) || 1, division: s && isNum(s.division) ? s.division : null };
     $('#rank-form').elements.mmr.value = s && isNum(s.mmr) ? s.mmr : '';
@@ -1525,7 +1620,8 @@
     var mmr = mmrTxt === '' ? null : parseInt(mmrTxt, 10);
     if (tier == null && mmr == null) { msg.textContent = tr('rank.needOne'); msg.className = 'form-msg err'; return; }
     var hasDiv = tier != null && tier >= 1 && tier <= 21 && rankForm.division != null;
-    var body = { playlist: f.elements.playlist.value, tier: tier, division: hasDiv ? rankForm.division : null, mmr: mmr };
+    var body = { playlist: f.elements.playlist.value, profile: state.profile === 'all' ? mainProfile() : state.profile,
+      tier: tier, division: hasDiv ? rankForm.division : null, mmr: mmr };
     msg.textContent = tr('common.saving'); msg.className = 'form-msg';
     if (MOCK) { body.id = Date.now(); body.at = new Date().toISOString(); state.ranks = annotateRanks(state.ranks.concat([body])); closeRank(); return; }
     apiFetch('/api/ranks', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
@@ -1590,7 +1686,7 @@
       '<span class="kpi-sub">' + sub + '</span></div>';
   }
   function renderGoal() {
-    var g = computeGoal(state.all, state.config && state.config.goal, null, state.manual);
+    var g = computeGoal(state.all, state.config && state.config.goal, null, profileManual());
     var fmtD = function (t) { return fmtDay(t, { day: 'numeric', month: 'short', year: 'numeric' }); };
     $('#goal-sub').textContent = tr('goal.sub', { daily: g.daily, mode: goalModeLabel(g.mode), from: fmtD(g.start), to: fmtD(g.end), days: g.days.length });
 
@@ -2126,7 +2222,7 @@
     $('#t-mates').innerHTML = '<thead><tr><th>' + tr('tbl.mate') + '</th><th class="r">' + tr('kpi.matches') + '</th><th class="r hide-mobile">' + wlHead() + '</th><th class="r">' + tr('kpi.winrate') + '</th><th class="r" title="' + esc(tr('tbl.vsAvgTip')) + '">' + tr('tbl.vsAvg') + '</th><th class="r hide-mobile">' + tr('tbl.goalsPer') + '</th></tr></thead><tbody>' +
       (rows.length ? rows.map(function (t) {
         var d = isNum(t.wr) && isNum(overall) ? (t.wr - overall) * 100 : null;
-        return '<tr><td class="name">' + playerName(t.name, t.pid) + '</td><td class="r">' + t.n + '</td><td class="r hide-mobile">' + t.wins + '–' + t.losses + '</td><td class="r">' + wrCell(t.wr) + '</td>' +
+        return '<tr><td class="name">' + playerName(t.name, t.pid) + (isOwnAccount(t.pid) ? ' <span class="chip" title="' + esc(tr('profile.ownTip')) + '">' + tr('profile.own') + '</span>' : '') + '</td><td class="r">' + t.n + '</td><td class="r hide-mobile">' + t.wins + '–' + t.losses + '</td><td class="r">' + wrCell(t.wr) + '</td>' +
           '<td class="r">' + (d == null ? '—' : fmtSigned(d) + ' pts') + '</td><td class="r hide-mobile">' + fmtNum(t.goalsPer, 2) + '</td></tr>';
       }).join('') : '<tr class="empty-row"><td colspan="6">' + tr('tbl.noMate') + '</td></tr>') + '</tbody>';
   }
@@ -2419,7 +2515,7 @@
     var f = state.hist, box = $('#hist-list'), more = $('#hist-more'), sum = $('#hist-summary');
     if (!state.loaded) { sum.textContent = ''; more.hidden = true; box.innerHTML = '<div class="hist-empty muted">' + tr('common.loading') + '</div>'; return; }
     var ms = filterHistory(state.all, f);
-    var man = filterManualHistory(state.manual, f);
+    var man = filterManualHistory(profileManual(), f);
     var groups = groupHistory(ms, man);
     var page = paginateGroups(groups, state.histShown);
     var s = summarizeHistory(ms, man);
@@ -2434,7 +2530,7 @@
     sum.innerHTML = parts.join(DOT_SEP);
     if (!groups.length) {
       more.hidden = true;
-      box.innerHTML = !state.all.length && !state.manual.length
+      box.innerHTML = !state.all.length && !profileManual().length
         ? '<div class="no-results"><p><strong>' + tr('hist.emptyTitle') + '</strong></p><p class="muted">' + tr('hist.emptyText') + '</p></div>'
         : '<div class="no-results"><p><strong>' + tr('hist.noMatchTitle') + '</strong></p><p class="muted">' + tr('hist.noMatchText') + '</p>' +
           '<p><button type="button" class="btn" data-hist-reset>' + tr('hist.reset') + '</button></p></div>';
@@ -2716,6 +2812,7 @@
     var id = state.route.id;
     if (!state.loaded) { box.innerHTML = '<div class="card mp-missing"><p class="muted">' + tr('mp.loading') + '</p></div>'; return; }
     var m = id != null ? findMatch(id) : null;
+    if (!m && id != null && switchToMatchProfile(id)) m = findMatch(id);
     if (!m) {
       document.title = tr('mp.notFound') + ' · Rocket Tracker';
       box.innerHTML = '<div class="card mp-missing"><h1 id="mp-title" tabindex="-1">' + tr('mp.notFound') + '</h1>' +
@@ -2988,7 +3085,8 @@
     loadRanks();
     return apiFetch(apiBase() + '/matches').then(function (data) {
       if (gen !== state.gen) return;
-      state.all = annotate(Array.isArray(data) ? data : []);
+      state.allRaw = Array.isArray(data) ? data.filter(function (m) { return m && typeof m === 'object'; }) : [];
+      setupProfiles();
       state.loaded = true;
       renderAll();
     }).catch(function (e) {
@@ -3059,7 +3157,7 @@
   function loadAll() {
     state.dataFor = state.route.player || '';
     state.gen++;
-    Object.assign(state, { all: [], filtered: [], manual: [], config: null, status: null, lastCount: null, loaded: false, open: {}, shown: PAGE_SIZE, histShown: HIST_PAGE });
+    Object.assign(state, { all: [], allRaw: [], profiles: [], filtered: [], manual: [], config: null, status: null, lastCount: null, loaded: false, open: {}, shown: PAGE_SIZE, histShown: HIST_PAGE });
     renderStatus();
     var gen = state.gen;
     return Promise.all([pollStatus(), Promise.all([loadConfig(), loadManual()]).then(loadMatches)]).then(function () {
@@ -3094,6 +3192,13 @@
     if (row) row.focus({ preventScroll: true });
   }
   function findMatch(id) { return state.all.find(function (m) { return m.id === id; }); }
+  /** A match of another of the player's accounts (link from Discord, history of "all"...): show that account. */
+  function switchToMatchProfile(id) {
+    var m = state.allRaw.find(function (x) { return x.id === id; });
+    if (!m || state.profile === 'all') return false;
+    selectProfile(profileKey(m));
+    return true;
+  }
   function updateTag(id, tag, sel) {
     var m = findMatch(id);
     var prev = m ? m.tag : null;
@@ -3113,7 +3218,8 @@
     var desc = fmtDate(m._t, true) + ' · ' + (m.mode || '') + ' · ' + num(m.team_score) + '–' + num(m.opp_score);
     if (!window.confirm(tr('confirm.deleteMatch') + '\n\n' + desc)) return;
     apiFetch('/api/matches/' + id, { method: 'DELETE' }).then(function () {
-      state.all = annotate(state.all.filter(function (x) { return x.id !== id; }));
+      state.allRaw = state.allRaw.filter(function (x) { return x.id !== id; });
+      setupProfiles();
       delete state.open[id];
       if (state.lastCount != null) state.lastCount = Math.max(0, state.lastCount - 1);
       toast(tr('toast.deleted'));
@@ -3553,6 +3659,7 @@
     bindPlayers();
     bindDevices();
     bindRanks();
+    $('#profile-sel').addEventListener('change', function (e) { selectProfile(e.target.value); });
     apiFetch('/api/session').catch(function () { return { mode: 'local' }; }).then(function (s) {
       state.mode = s && s.mode === 'server' ? 'server' : 'local';
       state.me = (s && s.user) || null;

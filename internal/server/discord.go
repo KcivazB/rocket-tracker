@@ -38,8 +38,9 @@ type Discord struct {
 }
 
 type openSession struct {
-	user *store.User
-	last time.Time // end of the last match
+	user    *store.User
+	profile string    // the account played (store.ProfileKey)
+	last    time.Time // end of the last match
 }
 
 // WeeklyAt is when the weekly recap is posted: Monday at this hour.
@@ -125,7 +126,7 @@ func (d *Discord) Match(u *store.User, webhook string, m *store.Match, ms []*sto
 		d.sessions = map[int64]*openSession{}
 	}
 	if s := d.sessions[u.ID]; s == nil || m.EndedAt.After(s.last) {
-		d.sessions[u.ID] = &openSession{user: u, last: m.EndedAt}
+		d.sessions[u.ID] = &openSession{user: u, profile: store.ProfileKey(m), last: m.EndedAt}
 	}
 	d.mu.Unlock()
 
@@ -232,9 +233,15 @@ func (d *Discord) closeSessions(ctx context.Context, st *store.Store, now time.T
 		if err != nil || c.DiscordWebhook == "" { // removed meanwhile
 			continue
 		}
-		ms, err := st.User(s.user.ID).List(ctx)
+		all, err := st.User(s.user.ID).List(ctx)
 		if err != nil {
 			continue
+		}
+		var ms []*store.Match
+		for _, m := range all {
+			if store.ProfileKey(m) == s.profile {
+				ms = append(ms, m)
+			}
 		}
 		if e, ok := d.sessionRecap(s.user, ms, s.last); ok {
 			d.send(c.DiscordWebhook, e)
@@ -362,7 +369,11 @@ func webhooks(ctx context.Context, st *store.Store) (map[int64]string, error) {
 // weeklyEmbed ranks the players with a webhook by their win rate over the 7
 // days before slot (5 decided matches at least).
 func (d *Discord) weeklyEmbed(ctx context.Context, st *store.Store, slot time.Time, hooks map[int64]string) (embed, bool, error) {
-	rows, err := st.Leaderboard(ctx, store.LeaderboardQuery{Since: slot.AddDate(0, 0, -7)})
+	profiles, err := mainProfiles(ctx, st)
+	if err != nil {
+		return embed{}, false, err
+	}
+	rows, err := st.Leaderboard(ctx, store.LeaderboardQuery{Since: slot.AddDate(0, 0, -7), Profiles: profiles})
 	if err != nil {
 		return embed{}, false, err
 	}

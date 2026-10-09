@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Match is the JSON model served by GET /api/matches (see docs/SPEC.md §4).
 type Match struct {
@@ -116,4 +119,29 @@ func (m *Match) Normalize() {
 	}
 	m.StartedAt = m.StartedAt.UTC().Truncate(time.Second)
 	m.EndedAt = m.EndedAt.UTC().Truncate(time.Second)
+}
+
+// ProfileKey identifies the in-game account a match was played on (the
+// player's "me"): its platform id, or its name when there is none. A player
+// with several Rocket League accounts has one profile per account.
+func ProfileKey(m *Match) string {
+	if id := strings.ToLower(strings.TrimSpace(m.Me.PrimaryID)); id != "" {
+		return id
+	}
+	if n := strings.ToLower(strings.TrimSpace(m.Me.Name)); n != "" {
+		return "name:" + n
+	}
+	return ""
+}
+
+// SameProfile keeps the matches of m's profile (m's own history).
+func SameProfile(ms []*Match, m *Match) []*Match {
+	k := ProfileKey(m)
+	out := make([]*Match, 0, len(ms))
+	for _, x := range ms {
+		if ProfileKey(x) == k {
+			out = append(out, x)
+		}
+	}
+	return out
 }

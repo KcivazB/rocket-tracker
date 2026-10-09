@@ -413,6 +413,7 @@ func (s *Server) agentMatch(w http.ResponseWriter, r *http.Request) {
 	}{ID: m.ID}
 	if c.TiltStreak > 0 || (s.Hub.Discord != nil && c.DiscordWebhook != "") {
 		if ms, err := s.Store.User(u.ID).List(r.Context()); err == nil {
+			ms = store.SameProfile(ms, m) // the history of the account just played
 			now := time.Now()
 			resp.Alert = tilt.Check(ms, c.TiltStreak, now)
 			if s.Hub.Discord != nil {
@@ -601,6 +602,12 @@ func (s *Server) leaderboard(w http.ResponseWriter, r *http.Request) {
 		lq.Since = time.Now().AddDate(0, 0, -n)
 	}
 	ctx := r.Context()
+	profiles, err := mainProfiles(ctx, s.Store)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	lq.Profiles = profiles
 	rows, err := s.Store.Leaderboard(ctx, lq)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -754,4 +761,30 @@ func (s *Server) discordTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// mainProfiles maps each player to the accounts of their settings (platform
+// ids and in-game names): only those count in the leaderboards. Players who
+// set none count all their accounts.
+func mainProfiles(ctx context.Context, st *store.Store) (map[int64]map[string]bool, error) {
+	us, err := st.Users(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]map[string]bool{}
+	for _, u := range us {
+		c, err := UserSettings(ctx, st, u.ID)
+		if err != nil || len(c.PlayerIDs)+len(c.PlayerNames) == 0 {
+			continue
+		}
+		set := map[string]bool{}
+		for _, id := range c.PlayerIDs {
+			set[strings.ToLower(strings.TrimSpace(id))] = true
+		}
+		for _, n := range c.PlayerNames {
+			set["name:"+strings.ToLower(strings.TrimSpace(n))] = true
+		}
+		out[u.ID] = set
+	}
+	return out, nil
 }

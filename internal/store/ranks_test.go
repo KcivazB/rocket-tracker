@@ -33,7 +33,7 @@ func TestRanks(t *testing.T) {
 		}
 	}
 
-	full := &Rank{At: t0, Playlist: "2v2", Tier: ip(14), Division: ip(3), MMR: ip(1032)} // Diamond II div III
+	full := &Rank{At: t0, Playlist: "2v2", Profile: " Epic|Main|0 ", Tier: ip(14), Division: ip(3), MMR: ip(1032)} // Diamond II div III
 	mmrOnly := &Rank{At: t0.Add(time.Hour), Playlist: "1v1", MMR: ip(845)}
 	rankOnly := &Rank{At: t0.Add(-time.Hour), Playlist: "3v3", Tier: ip(22)} // SSL
 	for _, r := range []*Rank{full, mmrOnly, rankOnly} {
@@ -52,7 +52,7 @@ func TestRanks(t *testing.T) {
 	if rs[0].Playlist != "3v3" || *rs[0].Tier != 22 || rs[0].Division != nil || rs[0].MMR != nil {
 		t.Fatalf("rank only %+v", rs[0])
 	}
-	if r := rs[1]; *r.Tier != 14 || *r.Division != 3 || *r.MMR != 1032 || !r.At.Equal(t0) {
+	if r := rs[1]; *r.Tier != 14 || *r.Division != 3 || *r.MMR != 1032 || !r.At.Equal(t0) || r.Profile != "epic|main|0" {
 		t.Fatalf("full %+v", r)
 	}
 	if r := rs[2]; r.Tier != nil || r.Division != nil || *r.MMR != 845 {

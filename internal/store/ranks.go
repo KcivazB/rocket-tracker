@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type Rank struct {
 	ID       int64     `json:"id"`
 	At       time.Time `json:"at"`
 	Playlist string    `json:"playlist"` // see Playlists
+	Profile  string    `json:"profile"`  // the account (ProfileKey of its matches); "" = not said (older entries)
 	Tier     *int      `json:"tier"`     // 0 unranked, 1-3 Bronze I-III ... 19-21 Grand Champion I-III, 22 Supersonic Legend; nil = not noted
 	Division *int      `json:"division"` // 1-4 (not for unranked / Supersonic Legend); nil = not noted
 	MMR      *int      `json:"mmr"`      // nil = not noted
@@ -45,13 +47,15 @@ func (r *Rank) Validate() error {
 		return errors.New("mmr must be 0 to 5000")
 	case r.At.IsZero():
 		return errors.New("missing date")
+	case len(r.Profile) > 200:
+		return errors.New("profile too long")
 	}
 	return nil
 }
 
 // Ranks lists the user's rank entries, oldest first.
 func (sc *Scope) Ranks(ctx context.Context) ([]Rank, error) {
-	rows, err := sc.s.db.QueryContext(ctx, `SELECT id, at, playlist, tier, division, mmr FROM ranks
+	rows, err := sc.s.db.QueryContext(ctx, `SELECT id, at, playlist, profile, tier, division, mmr FROM ranks
 		WHERE user_id = ? ORDER BY at, id`, sc.uid)
 	if err != nil {
 		return nil, err
@@ -62,7 +66,7 @@ func (sc *Scope) Ranks(ctx context.Context) ([]Rank, error) {
 		var r Rank
 		var at string
 		var tier, div, mmr int
-		if err := rows.Scan(&r.ID, &at, &r.Playlist, &tier, &div, &mmr); err != nil {
+		if err := rows.Scan(&r.ID, &at, &r.Playlist, &r.Profile, &tier, &div, &mmr); err != nil {
 			return nil, err
 		}
 		r.At, _ = time.Parse(tsLayout, at)
@@ -89,11 +93,12 @@ func orNone(p *int, none int) int {
 // AddRank stores a rank entry and sets r.ID.
 func (sc *Scope) AddRank(ctx context.Context, r *Rank) error {
 	r.At = r.At.UTC().Truncate(time.Second)
+	r.Profile = strings.ToLower(strings.TrimSpace(r.Profile))
 	if err := r.Validate(); err != nil {
 		return err
 	}
-	res, err := sc.s.db.ExecContext(ctx, `INSERT INTO ranks (user_id, at, playlist, tier, division, mmr) VALUES (?, ?, ?, ?, ?, ?)`,
-		sc.uid, r.At.Format(tsLayout), r.Playlist, orNone(r.Tier, -1), orNone(r.Division, 0), orNone(r.MMR, -1))
+	res, err := sc.s.db.ExecContext(ctx, `INSERT INTO ranks (user_id, at, playlist, profile, tier, division, mmr) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sc.uid, r.At.Format(tsLayout), r.Playlist, r.Profile, orNone(r.Tier, -1), orNone(r.Division, 0), orNone(r.MMR, -1))
 	if err != nil {
 		return err
 	}

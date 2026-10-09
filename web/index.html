@@ -25,6 +25,11 @@
         <a href="#/players" data-nav="players" id="nav-players" hidden data-i18n="nav.players">Joueurs</a>
       </nav>
       <div class="topbar-actions">
+        <label class="profile-switch" id="profile-switch" hidden>
+          <span class="sr-only" data-i18n="profile.label">Compte affiché</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+          <select id="profile-sel" class="select" data-i18n-attr="title:profile.label"></select>
+        </label>
         <span id="conn-pill" class="pill pill-muted" data-i18n-attr="title:st.pillTip">
           <span class="dot"></span><span class="pill-label" data-i18n="ui.connecting">Connexion…</span>
         </span>
@@ -500,7 +505,7 @@
   <dialog id="rank-dialog" class="modal">
     <form method="dialog" id="rank-form">
       <header class="modal-head">
-        <h2 data-i18n="rank.dialogTitle">Noter mon rang</h2>
+        <h2><span data-i18n="rank.dialogTitle">Noter mon rang</span> <small class="muted" id="rank-account"></small></h2>
         <button type="button" class="icon-btn" data-close data-i18n-attr="aria-label:common.close">×</button>
       </header>
       <div class="modal-body">

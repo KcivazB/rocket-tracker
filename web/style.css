@@ -174,6 +174,12 @@ button, input, select { font: inherit; color: inherit; }
 .live-score .clock.ot { color: var(--warn); }
 .live-me { display: flex; gap: 16px; font-size: 13px; color: var(--text-2); }
 .live-me b { display: block; font-size: 18px; color: var(--text); font-weight: 650; }
+/* account switcher */
+.profile-switch { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
+.profile-switch svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.profile-switch select { max-width: 240px; }
+@media (max-width: 700px) { .profile-switch select { max-width: 140px; } }
+
 /* rank & MMR */
 .rank-cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
 .rank-card { display: flex; gap: 14px; align-items: center; padding: 14px 16px; }

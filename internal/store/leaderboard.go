@@ -13,7 +13,15 @@ type LeaderboardQuery struct {
 	Mode  string    // "", "all", "1v1", "2v2", "3v3" or "other" (like the dashboard filter)
 	Tag   string    // "" / "all" or a tag
 	Since time.Time // zero = all time
+	// Profiles: the profiles (ProfileKey) that count for each user, the
+	// accounts of their settings; users missing from it count all of them.
+	Profiles map[int64]map[string]bool
 }
+
+// profileExpr is ProfileKey in SQL.
+const profileExpr = `CASE WHEN COALESCE(json_extract(data, '$.me.primary_id'), '') <> ''
+	THEN lower(trim(json_extract(data, '$.me.primary_id')))
+	ELSE CASE WHEN COALESCE(json_extract(data, '$.me.name'), '') <> '' THEN 'name:' || lower(trim(json_extract(data, '$.me.name'))) ELSE '' END END`
 
 // LeaderRow aggregates one player's matches. Averages are over decided
 // (won or lost) matches; abandoned ones are only counted.
@@ -61,8 +69,8 @@ func (s *Store) Leaderboard(ctx context.Context, q LeaderboardQuery) ([]LeaderRo
 		COALESCE(AVG(`+dec+`team_score - opp_score END), 0),
 		COALESCE(AVG(`+dec+`me_score END), 0), COALESCE(AVG(`+dec+`me_goals END), 0),
 		COALESCE(AVG(`+dec+`me_assists END), 0), COALESCE(AVG(`+dec+`me_saves END), 0),
-		COALESCE(AVG(`+dec+`me_shots END), 0), SUM(mvp), MAX(started_at)
-		FROM matches WHERE `+strings.Join(where, " AND ")+` GROUP BY user_id`, args...)
+		COALESCE(AVG(`+dec+`me_shots END), 0), SUM(mvp), MAX(started_at), `+profileExpr+`
+		FROM matches WHERE `+strings.Join(where, " AND ")+` GROUP BY user_id, `+profileExpr+` ORDER BY user_id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -70,13 +78,39 @@ func (s *Store) Leaderboard(ctx context.Context, q LeaderboardQuery) ([]LeaderRo
 	out := []LeaderRow{}
 	for rows.Next() {
 		var r LeaderRow
+		var profile string
 		if err := rows.Scan(&r.UserID, &r.Wins, &r.Losses, &r.Abandoned, &r.GoalDiffAvg, &r.ScoreAvg, &r.GoalsAvg,
-			&r.AssistsAvg, &r.SavesAvg, &r.ShotsAvg, &r.MVPs, &r.LastPlayed); err != nil {
+			&r.AssistsAvg, &r.SavesAvg, &r.ShotsAvg, &r.MVPs, &r.LastPlayed, &profile); err != nil {
 			return nil, err
 		}
-		out = append(out, r)
+		if want, ok := q.Profiles[r.UserID]; ok && !want[profile] {
+			continue
+		}
+		if n := len(out); n > 0 && out[n-1].UserID == r.UserID {
+			out[n-1].merge(r)
+		} else {
+			out = append(out, r)
+		}
 	}
 	return out, rows.Err()
+}
+
+// merge adds the row of another profile of the same user (averages weighted
+// by decided matches).
+func (r *LeaderRow) merge(o LeaderRow) {
+	a, b := float64(r.Wins+r.Losses), float64(o.Wins+o.Losses)
+	avg := func(x, y float64) float64 {
+		if a+b == 0 {
+			return 0
+		}
+		return (x*a + y*b) / (a + b)
+	}
+	r.GoalDiffAvg, r.ScoreAvg, r.GoalsAvg = avg(r.GoalDiffAvg, o.GoalDiffAvg), avg(r.ScoreAvg, o.ScoreAvg), avg(r.GoalsAvg, o.GoalsAvg)
+	r.AssistsAvg, r.SavesAvg, r.ShotsAvg = avg(r.AssistsAvg, o.AssistsAvg), avg(r.SavesAvg, o.SavesAvg), avg(r.ShotsAvg, o.ShotsAvg)
+	r.Wins, r.Losses, r.Abandoned, r.MVPs = r.Wins+o.Wins, r.Losses+o.Losses, r.Abandoned+o.Abandoned, r.MVPs+o.MVPs
+	if o.LastPlayed > r.LastPlayed {
+		r.LastPlayed = o.LastPlayed
+	}
 }
 
 // PlayerSummary is what the players list shows for each account.

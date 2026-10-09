@@ -129,6 +129,7 @@ var migrations = []string{
 		mmr        INTEGER NOT NULL DEFAULT -1
 	);
 	CREATE INDEX IF NOT EXISTS idx_ranks_user_at ON ranks(user_id, at);`,
+	`ALTER TABLE ranks ADD COLUMN profile TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (and creates / migrates) the database at path.

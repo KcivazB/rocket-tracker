@@ -36,7 +36,7 @@ import (
 )
 
 // Version is the application version (overridable with -ldflags -X main.Version=...).
-var Version = "0.12.0"
+var Version = "0.13.0"
 
 type globals struct {
 	dataDir string
@@ -241,7 +241,8 @@ func cmdRun(args []string, console bool) error {
 						log.Warn("tilt check: cannot list matches", "err", err)
 						return
 					}
-					desk.Tilt(tilt.Check(ms, cfgMgr.Get().TiltStreak, time.Now()))
+					// The history of the account just played (one PC, several accounts).
+					desk.Tilt(tilt.Check(store.SameProfile(ms, m), cfgMgr.Get().TiltStreak, time.Now()))
 				}()
 			}
 			return nil
