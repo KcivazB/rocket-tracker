@@ -1062,6 +1062,22 @@
       });
   }
 
+  /** Demo live match: the most frequent teammate and opponent of the mock history, plus a stranger. */
+  function mockLivePlayers() {
+    var best = { mate: null, opp: null }, n = {};
+    mock.matches.forEach(function (m) {
+      (m.players || []).forEach(function (p) {
+        if (p.is_me || !p.primary_id) return;
+        var role = p.team === m.my_team ? 'mate' : 'opp', k = role + p.primary_id;
+        n[k] = (n[k] || 0) + 1;
+        if (!best[role] || n[k] > n[role + best[role].primary_id]) best[role] = p;
+      });
+    });
+    var out = [{ name: 'Inconnu', primary_id: 'Steam|76561190000000000|0', team: 1 }];
+    if (best.mate) out.unshift({ name: best.mate.name, primary_id: best.mate.primary_id, team: 0 });
+    if (best.opp) out.push({ name: best.opp.name, primary_id: best.opp.primary_id, team: 1 });
+    return out;
+  }
   function mockFetch(path, opts) {
     var method = (opts.method || 'GET').toUpperCase();
     var ready = mockReady || (mockReady = (function () {
@@ -1109,7 +1125,8 @@
         var el = ((Date.now() - mock.t0) / 1000 + 117) % 330;
         var live = ms === 'live' ? {
           mode: '2v2', arena: 'EuroStadium_Night_P', time_seconds: Math.max(0, Math.round(300 - el)), overtime: false,
-          team_score: 2, opp_score: 1, my_team: 0, me: { name: 'Virgile', score: 286, goals: 1, shots: 3, assists: 1, saves: 2 }
+          team_score: 2, opp_score: 1, my_team: 0, me: { name: 'Virgile', score: 286, goals: 1, shots: 3, assists: 1, saves: 2 },
+          players: mockLivePlayers()
         } : null;
         return {
           version: '0.1.0-mock', connected: ms !== 'offline' && ms !== 'noini', transport: ms === 'offline' || ms === 'noini' ? '' : 'ws',
@@ -2415,7 +2432,8 @@
         '<span class="clock' + (Lv.overtime ? ' ot' : '') + '">' + (Lv.overtime ? '+' : '') + fmtClock(Lv.time_seconds) + '</span>' +
         '<span class="them" title="' + esc(tr('match.opponents')) + '">' + fmtNum(Lv.opp_score) + '</span></div>' +
         '<div class="live-me">' + ['score', 'goals', 'assists', 'saves', 'shots']
-          .map(function (k) { return '<span><b>' + fmtNum(me[k]) + '</b>' + tr('perf.' + k) + '</span>'; }).join('') + '</div>';
+          .map(function (k) { return '<span><b>' + fmtNum(me[k]) + '</b>' + tr('perf.' + k) + '</span>'; }).join('') + '</div>' +
+        liveMet(Lv);
     } else {
       live.hidden = true;
       live.innerHTML = '';
@@ -2431,6 +2449,38 @@
       if (+pa[i] !== +pb[i]) return +pa[i] < +pb[i];
     }
     return false;
+  }
+  /** Players of the live match already met in the history (by platform id: bots have none). */
+  function liveMet(Lv) {
+    var idx = metIndex(), rows = [];
+    (Lv.players || []).forEach(function (p) {
+      var rec = p.primary_id && idx[p.primary_id.toLowerCase()];
+      if (!rec) return;
+      var opp = p.team !== Lv.my_team, r = opp ? rec.opp : rec.mate;
+      if (!r.w && !r.l) return;
+      rows.push('<li class="' + (opp ? 'met-opp' : 'met-mate') + '"><b>' + esc(p.name) + '</b> ' +
+        esc(tr(opp ? 'live.metOpp' : 'live.metMate', { n: r.w + r.l, w: r.w, l: r.l })) + '</li>');
+    });
+    return rows.length ? '<div class="live-met"><span>' + esc(tr('live.met')) + '</span><ul>' + rows.join('') + '</ul></div>' : '';
+  }
+  // metIndex: platform id -> wins/losses against (opp) and with (mate) that player, rebuilt when the matches change.
+  var metCache = { all: null, idx: null };
+  function metIndex() {
+    if (metCache.all === state.all) return metCache.idx;
+    var idx = {};
+    state.all.forEach(function (m) {
+      if (!m.online || (m.result !== 'win' && m.result !== 'loss')) return;
+      (m.players || []).forEach(function (p) {
+        var id = (p.primary_id || '').toLowerCase();
+        var uid = id.split('|')[1];
+        if (p.is_me || !uid || uid === '0') return; // bots have no platform id
+        var rec = idx[id] || (idx[id] = { opp: { w: 0, l: 0 }, mate: { w: 0, l: 0 } });
+        var r = p.team === m.my_team ? rec.mate : rec.opp;
+        if (m.result === 'win') r.w++; else r.l++;
+      });
+    });
+    metCache = { all: state.all, idx: idx };
+    return idx;
   }
   function warning(icon, title, body, info) {
     return '<div class="warning' + (info ? ' info' : '') + '"><span class="w-icon">' + icon + '</span><div><strong>' + esc(title) + '</strong><p>' + body + '</p></div></div>';

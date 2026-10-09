@@ -551,6 +551,9 @@ func TestOfflineGuidAdoptedAndLive(t *testing.T) {
 	if l == nil || l.GUID != "LATE" || l.Me == nil || l.Me.Name != "Me" || l.OppScore != 1 || l.Mode != "1v1" {
 		t.Fatalf("live %+v", l)
 	}
+	if len(l.Players) != 1 || l.Players[0].Name != op1.Name || l.Players[0].PrimaryID != op1.ID || l.Players[0].Team != 1 {
+		t.Fatalf("live players %+v", l.Players)
+	}
 }
 
 func TestReplayViewingSkipped(t *testing.T) {

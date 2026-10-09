@@ -1014,6 +1014,15 @@ type Live struct {
 	OppScore    int     `json:"opp_score"`
 	MyTeam      int     `json:"my_team"`
 	Me          *LiveMe `json:"me"`
+	// Players are the others in the match (the dashboard looks them up in
+	// the history: opponents already met, usual teammates).
+	Players []LivePlayer `json:"players"`
+}
+
+type LivePlayer struct {
+	Name      string `json:"name"`
+	PrimaryID string `json:"primary_id"`
+	Team      int    `json:"team"`
 }
 
 type LiveMe struct {
@@ -1048,6 +1057,12 @@ func (t *Tracker) Live() *Live {
 			l.TeamScore = s
 		} else {
 			l.OppScore += s
+		}
+	}
+	l.Players = []LivePlayer{}
+	for _, p := range m.sortedPlayers() {
+		if p != me {
+			l.Players = append(l.Players, LivePlayer{Name: p.name, PrimaryID: p.primaryID, Team: p.team})
 		}
 	}
 	return l

@@ -30,6 +30,9 @@ and **Install the vX update** when a newer release is published on GitHub (check
 the local dashboard shows it too, with an **Install and restart** button). The update downloads the new
 `rltracker.exe`, checks it, replaces the running one and restarts; if it fails, the release page opens instead.
 
+**Met before.** During a match, the live banner lists the players you already faced or played with, with
+your record against / alongside them (online matches, matched by platform id; bots are ignored).
+
 **Tilt alert.** After a match, a Windows notification suggests a break when you lose several matches in a row
 in a session (3 by default, set in **Settings**, or off), quoting how you usually do after such a streak. It also
 fires once per session when you reach the number of matches past which your win rate usually drops. In
