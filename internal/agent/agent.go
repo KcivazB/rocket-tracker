@@ -116,7 +116,7 @@ type Options struct {
 	Ini        func() setup.IniStatus
 	Version    string
 	Log        *slog.Logger
-	ConfigPath string // agent.json, updated with the server's settings
+	ConfigPath string            // agent.json, updated with the server's settings
 	OnAlert    func(*tilt.Alert) // break suggestion after a match (may be nil)
 }
 
