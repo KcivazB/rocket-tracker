@@ -2,7 +2,7 @@
 #   docker build -t rocket-tracker-server .
 # See docs/SELF_HOSTING.md and docker-compose.example.yml.
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.26.9-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -10,7 +10,8 @@ COPY . .
 ARG VERSION=""
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w ${VERSION:+-X rocket-tracker/internal/buildinfo.Version=$VERSION}" \
-      -o /out/rltracker-server ./cmd/rltracker-server \
+    -o /out/rltracker-server ./cmd/rltracker-server \
+    && test "$(/out/rltracker-server --version)" = "${VERSION:-dev}" \
  && mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot

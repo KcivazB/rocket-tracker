@@ -154,7 +154,7 @@ func TestAgentJSONEnvelope(t *testing.T) {
 		path, limit, field := "/api/agent/matches", int64(MaxMatchBody), "match"
 		value := any(ingestionFixture())
 		if training {
-			path, limit, field = "/api/agent/trainings", 1<<14, "training"
+			path, limit, field = "/api/agent/trainings", MaxTrainingBody, "training"
 			start := ingestionFixture().StartedAt
 			value = &store.Training{StartedAt: start, EndedAt: start.Add(time.Minute), Source: "game"}
 		}

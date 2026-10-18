@@ -10,8 +10,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"rocket-tracker/internal/application"
 	"rocket-tracker/internal/store"
 )
 
@@ -48,6 +52,9 @@ func IsSQLite(head []byte) bool { return bytes.HasPrefix(head, sqliteMagic) }
 // QueueEntry imports one file of the agent's queue ({"key", "match"}).
 func (im *Importer) QueueEntry(ctx context.Context, name string, data []byte) (ImportResult, error) {
 	var res ImportResult
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
 	var e struct {
 		Key      string          `json:"key"`
 		Match    *store.Match    `json:"match"`
@@ -61,8 +68,7 @@ func (im *Importer) QueueEntry(ctx context.Context, name string, data []byte) (I
 		e.Key = strings.TrimSuffix(filepath.Base(name), ".json")
 	}
 	if e.Training != nil {
-		e.Training.ID = 0
-		if err := im.Scope.AddTraining(ctx, e.Training, e.Key); errors.Is(err, store.ErrInvalidTraining) {
+		if err := application.IngestTraining(ctx, im.Scope, e.Key, e.Training); errors.Is(err, store.ErrInvalidTraining) {
 			res.Skipped = append(res.Skipped, name+": "+err.Error())
 			return res, nil
 		} else if err != nil {
@@ -87,49 +93,51 @@ func (im *Importer) QueueEntry(ctx context.Context, name string, data []byte) (I
 // duplicate).
 func (im *Importer) Database(ctx context.Context, path string) (ImportResult, error) {
 	var res ImportResult
-	src, err := store.Open(path)
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+	src, err := openImportSource(ctx, path)
 	if err != nil {
 		return res, fmt.Errorf("not a Rocket Tracker database: %w", err)
 	}
-	defer src.Close()
-	ms, err := src.List(ctx)
-	if err != nil {
-		return res, err
-	}
-	for _, m := range ms {
+	defer src.db.Close()
+	err = src.matches(ctx, func(m *store.Match) error {
 		key := store.ImportKey(m)
 		if err := IngestAgentMatch(ctx, im.Scope, im.DefaultTag, key, m); errors.Is(err, ErrInvalidMatch) {
 			res.Skipped = append(res.Skipped, key+": "+err.Error())
-			continue
+			return nil
 		} else if err != nil {
-			return res, err
+			return err
 		}
 		res.Matches++
-	}
-	ds, err := src.ListManual(ctx)
+		return nil
+	})
 	if err != nil {
 		return res, err
 	}
-	for _, d := range ds {
+	err = src.manual(ctx, func(d store.ManualDay) error {
 		if err := im.Scope.SetManual(ctx, d); err != nil {
-			return res, fmt.Errorf("manual games %s %s: %w", d.Day, d.Mode, err)
+			return fmt.Errorf("manual games %s %s: %w", d.Day, d.Mode, err)
 		}
 		res.Manual++
-	}
-	ts, err := src.User(store.LocalUser).Trainings(ctx)
+		return nil
+	})
 	if err != nil {
 		return res, err
 	}
-	for _, t := range ts {
-		key := store.TrainingImportKey(&t)
-		t.ID = 0
-		if err := im.Scope.AddTraining(ctx, &t, key); errors.Is(err, store.ErrInvalidTraining) {
+	err = src.trainings(ctx, func(t *store.Training) error {
+		key := store.TrainingImportKey(t)
+		if err := application.IngestTraining(ctx, im.Scope, key, t); errors.Is(err, store.ErrInvalidTraining) {
 			res.Skipped = append(res.Skipped, key+": "+err.Error())
-			continue
+			return nil
 		} else if err != nil {
-			return res, err
+			return err
 		}
 		res.Trainings++
+		return nil
+	})
+	if err != nil {
+		return res, err
 	}
 	return res, nil
 }
@@ -180,22 +188,258 @@ func (im *Importer) Path(ctx context.Context, path string) (ImportResult, error)
 	return im.QueueEntry(ctx, filepath.Base(path), data)
 }
 
-// MaxImportBody bounds an upload (a local database with years of matches and
-// movement data stays well under this).
+// MaxImportBody is the default HTTP envelope limit, retained for callers.
 const MaxImportBody = 1 << 30
 
-// importFiles handles POST /api/import: a multipart upload of rltracker.db
-// and/or outbox .json files, stored for the signed-in player.
+type importLimits struct {
+	body, temporary          int64
+	files, parts, concurrent int
+	timeout                  time.Duration
+}
+
+// These are protective defaults, not measured player capacity requirements.
+// Read once per request; environment changes require an operator-managed restart.
+func readImportLimits() (importLimits, error) {
+	l := importLimits{body: MaxImportBody, temporary: MaxImportBody, files: 128, parts: 256, concurrent: 2, timeout: 5 * time.Minute}
+	for _, entry := range []struct {
+		name  string
+		value *int64
+	}{
+		{"RT_IMPORT_MAX_BYTES", &l.body}, {"RT_IMPORT_MAX_TEMP_BYTES", &l.temporary},
+	} {
+		if raw := strings.TrimSpace(os.Getenv(entry.name)); raw != "" {
+			n, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || n <= 0 || n == 1<<63-1 {
+				return l, importFailure(500, entry.name, "configure a positive byte count below 9223372036854775807")
+			}
+			*entry.value = n
+		}
+	}
+	for _, entry := range []struct {
+		name  string
+		value *int
+	}{
+		{"RT_IMPORT_MAX_FILES", &l.files}, {"RT_IMPORT_MAX_PARTS", &l.parts}, {"RT_IMPORT_MAX_CONCURRENT", &l.concurrent},
+	} {
+		if raw := strings.TrimSpace(os.Getenv(entry.name)); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				return l, importFailure(500, entry.name, "configure a positive integer")
+			}
+			*entry.value = n
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("RT_IMPORT_TIMEOUT")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return l, importFailure(500, "RT_IMPORT_TIMEOUT", "configure a positive Go duration, for example 5m")
+		}
+		l.timeout = d
+	}
+	return l, nil
+}
+
+// One process-wide admission gate also covers multiple Server instances. No
+// unbounded wait queue: an admitted import holds its slot until cleanup ends.
+var importAdmission struct {
+	sync.Mutex
+	active int
+}
+
+func admitImport(max int) bool {
+	importAdmission.Lock()
+	defer importAdmission.Unlock()
+	if importAdmission.active >= max {
+		return false
+	}
+	importAdmission.active++
+	return true
+}
+func releaseImport() {
+	importAdmission.Lock()
+	importAdmission.active--
+	importAdmission.Unlock()
+}
+
+type importError struct {
+	status         int
+	field, message string
+}
+
+func (e *importError) Error() string { return e.message }
+func importFailure(status int, field, message string) error {
+	return &importError{status, field, message}
+}
+
+func writeImportError(w http.ResponseWriter, ctx context.Context, err error, res ImportResult) {
+	var failure *importError
+	status, field, message := http.StatusBadRequest, "file", err.Error()
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &failure):
+		status, field, message = failure.status, failure.field, failure.message
+	case errors.Is(ctx.Err(), context.DeadlineExceeded), errors.Is(err, context.DeadlineExceeded), os.IsTimeout(err):
+		status, field, message = http.StatusRequestTimeout, "duration", "import deadline exceeded; inspect imported counts and retry a smaller batch (RT_IMPORT_TIMEOUT)"
+	case errors.Is(ctx.Err(), context.Canceled), errors.Is(err, context.Canceled):
+		status, field, message = http.StatusRequestTimeout, "duration", "import canceled; inspect imported counts before retrying"
+	case errors.As(err, &tooLarge):
+		status, field, message = http.StatusRequestEntityTooLarge, "body_bytes", "upload exceeds RT_IMPORT_MAX_BYTES; split the upload or ask the operator to adjust the limit"
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		field, message = "multipart", "upload interrupted or malformed; resend the complete multipart upload"
+	}
+	if status == http.StatusTooManyRequests {
+		w.Header().Set("Retry-After", "1")
+	}
+	writeJSON(w, status, struct {
+		Error    string       `json:"error"`
+		Field    string       `json:"field"`
+		Imported ImportResult `json:"imported"`
+	}{message, field, res})
+}
+
+type stagedImport struct{ name, path string }
+
+// stageImports reads the complete envelope, including the epilogue, before any
+// destination write. Content validation remains per record, not transactional.
+func (s *Server) stageImports(ctx context.Context, r *http.Request, dir string, l importLimits) ([]stagedImport, error) {
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return nil, importFailure(400, "multipart", "expected multipart/form-data with file parts")
+	}
+	var staged []stagedImport
+	var used int64
+	for parts := 0; ; parts++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				return nil, err
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, importFailure(400, "multipart", "upload interrupted or malformed; resend the complete multipart upload")
+		}
+		if parts >= l.parts {
+			return nil, importFailure(413, "parts", "too many multipart parts; split the upload (RT_IMPORT_MAX_PARTS)")
+		}
+		if part.FileName() == "" {
+			if _, err := io.Copy(io.Discard, part); err != nil {
+				return nil, err
+			}
+			if err := part.Close(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if len(staged) >= l.files {
+			return nil, importFailure(413, "files", "too many files; split the upload (RT_IMPORT_MAX_FILES)")
+		}
+		path := filepath.Join(dir, strconv.Itoa(len(staged)))
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			return nil, importFailure(500, "temporary_bytes", "cannot create temporary import file; check temporary directory permissions and free space")
+		}
+		n, copyErr := io.Copy(f, io.LimitReader(part, l.temporary-used))
+		closeErr := f.Close()
+		used += n
+		if copyErr != nil {
+			var diskError *os.PathError
+			if errors.As(copyErr, &diskError) {
+				return nil, importFailure(500, "temporary_bytes", "cannot store upload; check temporary directory permissions and free space")
+			}
+			return nil, copyErr
+		}
+		if closeErr != nil {
+			return nil, importFailure(500, "temporary_bytes", "cannot store upload; check temporary directory free space")
+		}
+		// Probe without writing a byte beyond the staging budget.
+		var extra [1]byte
+		nExtra, readErr := io.ReadFull(part, extra[:])
+		if nExtra > 0 {
+			return nil, importFailure(413, "temporary_bytes", "upload exceeds temporary staging budget; split the upload (RT_IMPORT_MAX_TEMP_BYTES)")
+		}
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		if err := part.Close(); err != nil {
+			return nil, err
+		}
+		staged = append(staged, stagedImport{part.FileName(), path})
+	}
+	// multipart.Reader can stop at the closing boundary before consuming the
+	// request body. The HTTP envelope limit also applies to trailing bytes.
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(staged) == 0 {
+		return nil, importFailure(400, "files", "no file; select a Rocket Tracker database or outbox JSON files")
+	}
+	return staged, nil
+}
+
+// importFiles handles POST /api/import for the authenticated/local scope.
+// Budgets/envelope failures precede writes; content failures can be partial.
 func (s *Server) importFiles(w http.ResponseWriter, r *http.Request) {
 	sc, ok := s.scope(w, r)
 	if !ok {
 		return
 	}
+	l, err := readImportLimits()
+	if err != nil {
+		writeImportError(w, r.Context(), err, ImportResult{})
+		return
+	}
+	if !admitImport(l.concurrent) {
+		writeImportError(w, r.Context(), importFailure(429, "concurrency", "import capacity busy; retry later (RT_IMPORT_MAX_CONCURRENT)"), ImportResult{})
+		return
+	}
+	defer releaseImport()
+	ctx, cancel := context.WithTimeout(r.Context(), l.timeout)
+	defer cancel()
+	// A context alone does not interrupt a blocked HTTP body read. Set the
+	// connection deadline as well; Close supports handlers with wrapped bodies.
+	controller := http.NewResponseController(w)
+	deadline, _ := ctx.Deadline()
+	_ = controller.SetReadDeadline(deadline)
+	defer controller.SetReadDeadline(time.Time{})
+	body := r.Body
+	stop := context.AfterFunc(ctx, func() { _ = body.Close() })
+	defer stop()
+	r.Body = http.MaxBytesReader(w, r.Body, l.body)
+	if r.ContentLength > l.body {
+		writeImportError(w, ctx, &http.MaxBytesError{Limit: l.body}, ImportResult{})
+		return
+	}
+	dir, err := os.MkdirTemp(s.TempDir, "rltracker-import-")
+	if err != nil {
+		writeImportError(w, ctx, importFailure(500, "temporary_bytes", "cannot create import directory; check temporary directory permissions and free space"), ImportResult{})
+		return
+	}
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			s.Log.Warn("import temporary cleanup failed", "dir", dir, "err", err)
+		}
+	}()
+	staged, err := s.stageImports(ctx, r, dir, l)
+	if err != nil {
+		writeImportError(w, ctx, err, ImportResult{})
+		return
+	}
 	defTag := ""
 	if s.Hub != nil {
-		c, err := s.userSettings(r.Context(), sc.UserID())
+		c, err := s.userSettings(ctx, sc.UserID())
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			writeImportError(w, ctx, err, ImportResult{})
 			return
 		}
 		defTag = c.DefaultTag
@@ -203,81 +447,43 @@ func (s *Server) importFiles(w http.ResponseWriter, r *http.Request) {
 		defTag = s.Config.Get().DefaultTag
 	}
 	im := &Importer{Scope: sc, DefaultTag: defTag}
-
-	r.Body = http.MaxBytesReader(w, r.Body, MaxImportBody)
-	mr, err := r.MultipartReader()
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "expected a multipart upload")
-		return
-	}
 	var res ImportResult
-	files := 0
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			writeErr(w, http.StatusBadRequest, "upload interrupted: "+err.Error())
+	for _, file := range staged {
+		if err := ctx.Err(); err != nil {
+			writeImportError(w, ctx, err, res)
 			return
 		}
-		name := part.FileName()
-		if name == "" {
-			part.Close()
-			continue
-		}
-		files++
-		r1, err := s.importPart(r.Context(), im, name, part)
-		part.Close()
+		r1, err := s.importStaged(ctx, im, file)
 		res.add(r1)
 		if err != nil {
-			s.Log.Warn("import", "file", name, "err", err)
-			writeErr(w, http.StatusBadRequest, name+": "+err.Error())
+			writeImportError(w, ctx, fmt.Errorf("%s: %w", file.name, err), res)
 			return
 		}
 	}
-	if files == 0 {
-		writeErr(w, http.StatusBadRequest, "no file")
-		return
-	}
-	s.Log.Info("files imported", "files", files, "matches", res.Matches, "manual", res.Manual, "skipped", len(res.Skipped))
+	s.Log.Info("files imported", "files", len(staged), "matches", res.Matches, "manual", res.Manual, "trainings", res.Trainings, "skipped", len(res.Skipped))
 	writeJSON(w, http.StatusOK, res)
 }
 
-// importPart imports one uploaded file: a database goes through a temporary
-// file (SQLite needs one), a queued match is read in memory.
-func (s *Server) importPart(ctx context.Context, im *Importer, name string, part io.Reader) (ImportResult, error) {
+func (s *Server) importStaged(ctx context.Context, im *Importer, file stagedImport) (ImportResult, error) {
+	f, err := os.Open(file.path)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	defer f.Close()
 	head := make([]byte, len(sqliteMagic))
-	n, err := io.ReadFull(part, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+	n, err := io.ReadFull(f, head)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return ImportResult{}, err
 	}
-	body := io.MultiReader(bytes.NewReader(head[:n]), part)
-	if !IsSQLite(head[:n]) {
-		data, err := io.ReadAll(io.LimitReader(body, MaxMatchBody+1))
-		if err != nil {
-			return ImportResult{}, err
-		}
-		if len(data) > MaxMatchBody {
-			return ImportResult{Skipped: []string{name + ": not a database nor a queued match"}}, nil
-		}
-		return im.QueueEntry(ctx, name, data)
+	if IsSQLite(head[:n]) {
+		return im.Database(ctx, file.path)
 	}
-	dir, err := os.MkdirTemp(s.TempDir, "rltracker-import-")
+	data, err := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(head[:n]), f), MaxMatchBody+1))
 	if err != nil {
 		return ImportResult{}, err
 	}
-	defer os.RemoveAll(dir)
-	tmp := filepath.Join(dir, "import.db")
-	f, err := os.Create(tmp)
-	if err != nil {
-		return ImportResult{}, err
+	if len(data) > MaxMatchBody {
+		return ImportResult{Skipped: []string{file.name + ": not a database nor a queued match (4 MiB JSON limit)"}}, nil
 	}
-	if _, err := io.Copy(f, body); err != nil {
-		f.Close()
-		return ImportResult{}, err
-	}
-	if err := f.Close(); err != nil {
-		return ImportResult{}, err
-	}
-	return im.Database(ctx, tmp)
+	return im.QueueEntry(ctx, file.name, data)
 }

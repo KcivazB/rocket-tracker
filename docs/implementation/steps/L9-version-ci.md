@@ -26,7 +26,11 @@ Build simple/injecté sur les deux exécutables, normalisation et updater vérif
 
 Revue architecture, impact joueur et exploitation ; ajouter la frontière sécurité lorsqu’elle est concernée. Vérifier les liens/commandes documentés. Une proposition, une intégration et une release restent des états distincts.
 
-## Prochaine action
+## État de la proposition
+
+La mise en œuvre et ses limites sont détaillées dans [la fiche de livraison](L9-artifacts.md). Les critères ci-dessus restent distincts de la qualification externe et de l’intégration.
+
+## Action de référence (préparation initiale)
 
 Appliquer [ADR-0003](../../decisions/0003-version-et-artefacts.md) : supprimer les bumps de sources et migrer les injections vers `buildinfo.Version`, avec fallback `dev` et tests des binaires.
 

@@ -26,7 +26,11 @@ Imports inspectés, tests purs et fixtures compatibles ; couplages restants nomm
 
 Revue architecture, impact joueur et exploitation ; ajouter la frontière sécurité lorsqu’elle est concernée. Vérifier les liens/commandes documentés. Une proposition, une intégration et une release restent des états distincts.
 
-## Prochaine action
+## État de la proposition
+
+La mise en œuvre et ses limites sont détaillées dans [la fiche de livraison](L4-observations-complete.md). Les critères ci-dessus restent distincts de la qualification externe et de l’intégration.
+
+## Action de référence (préparation initiale)
 
 Choisir la première règle dont l’extraction inverse une dépendance concrète.
 

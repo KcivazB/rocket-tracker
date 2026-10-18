@@ -28,8 +28,8 @@ func TestDomainImportsStayPure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if path != "strings" && path != "time" {
-				t.Errorf("%s imports %s; domain production code is limited to strings/time", name, path)
+			if path != "strings" && path != "time" && path != "errors" && path != "fmt" && path != "math" && path != "slices" && path != "encoding/json" {
+				t.Errorf("%s imports %s; domain production code must use its pure standard-library allowlist", name, path)
 			}
 		}
 	}

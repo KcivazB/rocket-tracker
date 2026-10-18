@@ -83,12 +83,19 @@ func repairGoalsAndSpeeds(m *Match) bool {
 		changed = true
 	}
 
+	return RepairImportedGoals(m) || changed
+}
+
+// RepairImportedGoals repairs the known full/empty duplicate-goal pattern.
+// It is deliberately separate from legacy speed heuristics: imported values
+// without established units must not be converted from their magnitude.
+func RepairImportedGoals(m *Match) bool {
 	// The game sends each goal twice (a full GoalScored and an empty one, no
 	// scorer, speed 0) at the same game time, and the duplicates also shifted
 	// the team attribution. Goals less than 2 s of game time apart are one goal
 	// (the clock is stopped until the next kickoff); its team is the scorer's.
 	if len(m.Goals) < 2 {
-		return changed
+		return false
 	}
 	teamOf := map[string]string{}
 	for _, p := range m.Players {
@@ -116,7 +123,7 @@ func repairGoalsAndSpeeds(m *Match) bool {
 		kept = append(kept, g)
 	}
 	if len(kept) == len(m.Goals) {
-		return changed
+		return false
 	}
 	for i := range kept {
 		g := &kept[i]

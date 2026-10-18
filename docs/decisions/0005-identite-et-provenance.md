@@ -22,3 +22,22 @@ Confondre ces identités simplifie l’affichage mais trompe sur les garanties e
 ## Validation et mise en œuvre
 
 Tester profils distincts, ID forgé/non lié, rejeu, GUID copié et imports tiers sans acquisition de statut vérifié. Si une liaison est développée, vérifier ses jetons/audience/temps/session et son absence d’état partiel en erreur. Si les règles de partage changent, couvrir lectures, exports et notifications. Revoir cette décision uniquement avec un contrat produit et des preuves d’identité qualifiés.
+
+## Mise en œuvre proposée et adoption
+
+Le code de cette proposition et les contrats actuels sont décrits dans
+[ARCHITECTURE.md](../ARCHITECTURE.md), [SPEC.md](../SPEC.md),
+[OPERATIONS.md](../OPERATIONS.md) et [RELEASING.md](../RELEASING.md).
+Les preuves finales sont liées dans le suivi d’implémentation et la PR.
+L’autorisation d’implémenter ne vaut pas acceptation des mainteneurs, intégration
+ou release. Pour ADR-0005, la séparation technique est appliquée ; politique de
+partage et intégration plateforme restent des décisions produit distinctes.
+
+### Précisions issues de l’audit #9
+
+Le profil explicite contraint aussi la branche de déduplication par clé de
+transport. L'enregistrement lit la configuration persistée et commit sous le
+même verrou interprocessus que le setup ; le cache de l'uploader n'autorise pas
+la destination. La fenêtre de rang conserve sa cible explicitement affichée
+lors de l'ouverture. La politique d'attribution du warmup personne/profil et
+la réplication des suppressions restent des décisions produit ouvertes.

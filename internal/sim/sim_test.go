@@ -53,7 +53,7 @@ func TestSimulatorToTracker(t *testing.T) {
 				},
 			})
 			cl := &statsapi.Client{Port: port, RetryInterval: 100 * time.Millisecond, HandshakeTimeout: 300 * time.Millisecond,
-				OnEvent: tr.HandleEvent, OnDisconnect: tr.Disconnected}
+				OnEvent: statsapi.ObserveEvents(tr.HandleEvent), OnDisconnect: tr.Disconnected}
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			go cl.Run(ctx)

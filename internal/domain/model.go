@@ -8,6 +8,9 @@ import (
 
 // Match is the JSON model served by GET /api/matches (see docs/SPEC.md §4).
 type Match struct {
+	// SpeedUnit applies to movement, hits and goals. New unknown units retain
+	// raw values; absent means the historical uu/s contract.
+	SpeedUnit SpeedUnit      `json:"speed_unit,omitempty"`
 	ID        int64          `json:"id"`
 	GUID      string         `json:"guid"`
 	Online    bool           `json:"online"`
@@ -92,18 +95,21 @@ type Player struct {
 }
 
 type Movement struct {
-	SampleS       float64 `json:"sample_s"`
-	AvgSpeed      float64 `json:"avg_speed"`
-	SupersonicPct float64 `json:"supersonic_pct"`
-	GroundPct     float64 `json:"ground_pct"`
-	WallPct       float64 `json:"wall_pct"`
-	AirPct        float64 `json:"air_pct"`
-	AvgBoost      float64 `json:"avg_boost"`
-	ZeroBoostPct  float64 `json:"zero_boost_pct"`
-	FullBoostPct  float64 `json:"full_boost_pct"`
-	BoostingPct   float64 `json:"boosting_pct"`
-	PowerslidePct float64 `json:"powerslide_pct"`
-	DemolishedS   float64 `json:"demolished_s"`
+	// CarSampleS is accepted complete car time. Nil denotes a legacy record;
+	// zero denotes observed demolition only, with unavailable car aggregates.
+	CarSampleS    *float64 `json:"car_sample_s,omitempty"`
+	SampleS       float64  `json:"sample_s"`
+	AvgSpeed      float64  `json:"avg_speed"`
+	SupersonicPct float64  `json:"supersonic_pct"`
+	GroundPct     float64  `json:"ground_pct"`
+	WallPct       float64  `json:"wall_pct"`
+	AirPct        float64  `json:"air_pct"`
+	AvgBoost      float64  `json:"avg_boost"`
+	ZeroBoostPct  float64  `json:"zero_boost_pct"`
+	FullBoostPct  float64  `json:"full_boost_pct"`
+	BoostingPct   float64  `json:"boosting_pct"`
+	PowerslidePct float64  `json:"powerslide_pct"`
+	DemolishedS   float64  `json:"demolished_s"`
 }
 
 type Hits struct {
@@ -115,7 +121,7 @@ type Hits struct {
 }
 
 // HitPoint is one of my touches: when, where the ball was and its speed
-// before and after (uu/s). Positions are seen from my team's side: my goal
+// before and after (Match.SpeedUnit). Positions are seen from my team's side: my goal
 // is at negative Y (the field spans X ±4096, Y ±5120, Z 0-2044 uu).
 type HitPoint struct {
 	T    float64 `json:"t"`

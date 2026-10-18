@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -38,8 +36,9 @@ type OIDCConfig struct {
 type OIDC struct {
 	cfg OIDCConfig
 
-	mu       sync.Mutex
-	provider *oidc.Provider
+	mu           sync.Mutex
+	provider     *oidc.Provider
+	transactions map[string]oauthTransaction
 }
 
 // NewOIDC returns a client for cfg.
@@ -69,7 +68,7 @@ func (o *OIDC) setup() (*oidc.Provider, *oauth2.Config, error) {
 
 const oauthCookie = "rt_oauth"
 
-// oauthState travels in a short-lived cookie between login and callback.
+// oauthState stays server-side; only an opaque browser binding travels in a cookie.
 type oauthState struct {
 	State    string `json:"s"`
 	Nonce    string `json:"n"`
@@ -77,18 +76,60 @@ type oauthState struct {
 	Next     string `json:"next"`
 }
 
+const oauthLifetime = 10 * time.Minute
+
+type oauthTransaction struct {
+	state     oauthState
+	namespace string
+	expires   time.Time
+}
+
+func (o *OIDC) begin(h *Hub, previous string, st oauthState) (string, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	now := time.Now()
+	for key, tx := range o.transactions {
+		if !now.Before(tx.expires) {
+			delete(o.transactions, key)
+		}
+	}
+	if o.transactions == nil {
+		o.transactions = make(map[string]oauthTransaction)
+	}
+	delete(o.transactions, previous)
+	if len(o.transactions) >= 4096 {
+		return "", errors.New("too many pending sign-ins")
+	}
+	binding := store.NewToken("")
+	o.transactions[binding] = oauthTransaction{state: st, namespace: h.origin() + "/" + h.cookieName(oauthCookie), expires: now.Add(oauthLifetime)}
+	return binding, nil
+}
+
+// consume removes the transaction before any provider call, including failures.
+func (o *OIDC) consume(h *Hub, binding string) (oauthState, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	tx, ok := o.transactions[binding]
+	delete(o.transactions, binding)
+	if !ok || !time.Now().Before(tx.expires) || tx.namespace != h.origin()+"/"+h.cookieName(oauthCookie) {
+		return oauthState{}, errors.New("expired or unbound sign-in")
+	}
+	return tx.state, nil
+}
+
 // safeNext keeps only local paths (no open redirect). Browsers drop tabs and
 // newlines from URLs and read "\" as "/", so "/\t/evil.com" would lead away:
 // control characters and backslashes are refused anywhere.
 func safeNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/auth/") ||
+	if len(next) > 2048 || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/auth/") ||
 		strings.ContainsFunc(next, func(c rune) bool { return c < 0x20 || c == 0x7f || c == '\\' }) {
 		return "/"
 	}
 	if u, err := url.Parse(next); err != nil || u.Scheme != "" || u.Host != "" {
 		return "/"
 	}
-	return next
+	// Query parsing may return a substring backed by the entire request query.
+	return strings.Clone(next)
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -114,9 +155,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := oauthState{State: store.NewToken(""), Nonce: store.NewToken(""), Verifier: oauth2.GenerateVerifier(), Next: next}
-	b, _ := json.Marshal(st)
-	http.SetCookie(w, &http.Cookie{Name: oauthCookie, Value: base64.RawURLEncoding.EncodeToString(b), Path: "/auth/",
-		MaxAge: 600, HttpOnly: true, Secure: s.Hub.secureCookies(), SameSite: http.SameSiteLaxMode})
+	previous, _ := s.Hub.securityCookieValue(r, oauthCookie)
+	binding, err := s.Hub.OIDC.begin(s.Hub, previous, st)
+	if err != nil {
+		authPage(w, r, http.StatusServiceUnavailable, t("auth.unavailable"), "<p>"+t("auth.retry")+"</p>")
+		return
+	}
+	http.SetCookie(w, s.Hub.securityCookie(oauthCookie, binding, int(oauthLifetime.Seconds())))
 	http.Redirect(w, r, oc.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier)), http.StatusFound)
 }
 
@@ -144,14 +189,11 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var st oauthState
-	c, err := r.Cookie(oauthCookie)
+	binding, err := s.Hub.securityCookieValue(r, oauthCookie)
 	if err == nil {
-		var b []byte
-		if b, err = base64.RawURLEncoding.DecodeString(c.Value); err == nil {
-			err = json.Unmarshal(b, &st)
-		}
+		st, err = s.Hub.OIDC.consume(s.Hub, binding)
 	}
-	http.SetCookie(w, &http.Cookie{Name: oauthCookie, Path: "/auth/", MaxAge: -1, HttpOnly: true, Secure: s.Hub.secureCookies(), SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, s.Hub.securityCookie(oauthCookie, "", -1))
 	q := r.URL.Query()
 	if e := q.Get("error"); e != "" {
 		msg := q.Get("error_description")
@@ -184,6 +226,10 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadGateway, "auth.failed", "auth.tokenInvalid", err)
 		return
 	}
+	if idt.Subject == "" {
+		fail(http.StatusBadGateway, "auth.failed", "auth.tokenInvalid", errors.New("empty ID token subject"))
+		return
+	}
 	if idt.Nonce != st.Nonce {
 		fail(http.StatusBadRequest, "auth.failed", "auth.nonce", errors.New("nonce mismatch"))
 		return
@@ -196,6 +242,10 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	if cl.PreferredUsername == "" && cl.Name == "" || (len(s.Hub.OIDC.cfg.AllowedGroups) > 0 && cl.Groups == nil) {
 		// Some providers only put the profile in the userinfo response.
 		if ui, err := p.UserInfo(ctx, oauth2.StaticTokenSource(tok)); err == nil {
+			if ui.Subject == "" || ui.Subject != idt.Subject {
+				fail(http.StatusBadGateway, "auth.failed", "auth.claims", errors.New("userinfo subject mismatch"))
+				return
+			}
 			var more idClaims
 			if ui.Claims(&more) == nil {
 				cl.PreferredUsername = firstNonEmpty(cl.PreferredUsername, more.PreferredUsername)
@@ -250,10 +300,10 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "cross-origin request refused")
 		return
 	}
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		_ = s.Store.DeleteSession(r.Context(), c.Value)
+	if tok, err := s.Hub.securityCookieValue(r, sessionCookie); err == nil {
+		_ = s.Store.DeleteSession(r.Context(), tok)
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.Hub.secureCookies(), SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, s.Hub.securityCookie(sessionCookie, "", -1))
 	http.Redirect(w, r, "/auth/logged-out", http.StatusSeeOther)
 }
 

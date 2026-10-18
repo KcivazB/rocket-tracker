@@ -1,4 +1,4 @@
-package main
+package desktopapp
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"rocket-tracker/internal/agent"
 	"rocket-tracker/internal/buildinfo"
 	"rocket-tracker/internal/config"
+	"rocket-tracker/internal/domain"
 	"rocket-tracker/internal/i18n"
 	"rocket-tracker/internal/server"
 	"rocket-tracker/internal/setup"
@@ -27,6 +28,8 @@ import (
 // when there is one. The local database keeps every match too, so the local
 // dashboard still works while the server is down.
 type uplink struct {
+	records *store.Scope
+
 	ctx     context.Context
 	log     *slog.Logger
 	dataDir string
@@ -36,7 +39,6 @@ type uplink struct {
 
 	mu   sync.Mutex
 	a    *agent.Agent
-	cfg  *agent.Config
 	stop context.CancelFunc
 	done chan struct{}
 
@@ -53,12 +55,10 @@ func (u *uplink) agent() *agent.Agent {
 
 // Server is the server the matches go to ("" = local only).
 func (u *uplink) Server() string {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.cfg == nil {
-		return ""
+	if a := u.agent(); a != nil {
+		return a.ServerURL()
 	}
-	return u.cfg.Server
+	return ""
 }
 
 // Reachable reports whether the server answered the last heartbeat.
@@ -77,6 +77,9 @@ func (u *uplink) outbox(server string) (*agent.Outbox, error) {
 			return nil, err
 		}
 		u.ob = ob
+	}
+	if u.records != nil {
+		return u.ob, nil
 	}
 	if _, err := u.ob.SetDestination(server, u.log); err != nil {
 		return nil, err
@@ -97,7 +100,7 @@ func (u *uplink) start(cfg *agent.Config) error {
 		rlDir = u.rlDir()
 	}
 	a := agent.New(cfg, agent.Options{
-		Client: newAgentClient(cfg), Outbox: outbox, Version: buildinfo.Version, ConfigPath: agentConfigPath(u.dataDir),
+		Client: newAgentClient(cfg), Outbox: outbox, Journal: u.records, Version: buildinfo.Version, ConfigPath: agentConfigPath(u.dataDir),
 		Log: u.log.With("component", "agent"), Ini: cachedIni(rlDir), Tracker: u.tracker, ConnStatus: u.conn,
 	})
 	ctx, stop := context.WithCancel(u.ctx)
@@ -107,7 +110,7 @@ func (u *uplink) start(cfg *agent.Config) error {
 		a.Run(ctx)
 	}()
 	u.mu.Lock()
-	u.a, u.cfg, u.stop, u.done = a, cfg, stop, done
+	u.a, u.stop, u.done = a, stop, done
 	u.mu.Unlock()
 	u.log.Info("sending matches to the server", "server", cfg.Server)
 	return nil
@@ -147,7 +150,7 @@ func (u *uplink) watch() {
 func (u *uplink) Stop() {
 	u.mu.Lock()
 	stop, done := u.stop, u.done
-	u.a, u.cfg, u.stop, u.done = nil, nil, nil, nil
+	u.a, u.stop, u.done = nil, nil, nil
 	u.mu.Unlock()
 	if stop != nil {
 		stop()
@@ -164,45 +167,27 @@ func (u *uplink) Flush() {
 	}
 }
 
-// Save queues a match saved locally for the server.
-func (u *uplink) Save(m *store.Match) {
-	if err := u.queue(func(a *agent.Agent) error { return a.Save(m) },
-		func(ob *agent.Outbox) error { return ob.Put(agent.NewKey(), m) }); err != nil {
-		u.log.Error("cannot queue the match for the server (it is in the local database)", "err", err)
-	}
-}
-
-// SaveTraining queues a training saved locally for the server.
-func (u *uplink) SaveTraining(t *store.Training) {
-	if err := u.queue(func(a *agent.Agent) error { return a.SaveTraining(t) },
-		func(ob *agent.Outbox) error { return ob.PutTraining(agent.NewKey(), t) }); err != nil {
-		u.log.Error("cannot queue the training for the server (it is in the local database)", "err", err)
-	}
-}
-
-// queue hands an entry to the running agent. When none runs although a
-// server is configured (being reconfigured, not started yet), the entry is
-// written to the outbox all the same: the agent sends it once started. Local
-// only (no agent.json): nothing to queue.
-func (u *uplink) queue(viaAgent func(*agent.Agent) error, direct func(*agent.Outbox) error) error {
-	if a := u.agent(); a != nil {
-		return viaAgent(a)
-	}
+// Destination reads configuration even while the uploader is stopped. Unknown
+// identities are recorded as held; unreadable configuration fails the save.
+func (u *uplink) Destination() (*domain.Destination, error) {
 	cfg, err := agent.LoadConfig(agentConfigPath(u.dataDir))
 	if errors.Is(err, agent.ErrNotConfigured) {
-		return nil
-	} else if err != nil {
-		return err
+		if _, statErr := os.Stat(agentConfigPath(u.dataDir)); errors.Is(statErr, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	ob, err := u.outbox(cfg.Server)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := direct(ob); err != nil {
-		return err
+	return &domain.Destination{Server: cfg.Server, ServerID: cfg.ServerID, AccountID: cfg.AccountID}, nil
+}
+func (u *uplink) Wake() {
+	u.obMu.Lock()
+	defer u.obMu.Unlock()
+	if u.ob != nil {
+		u.ob.Wake()
 	}
-	u.log.Info("queued for upload, the agent will send it once started", "server", cfg.Server)
-	return nil
 }
 
 // serverUp reports whether the dashboard of a server answers. A reverse proxy
@@ -291,7 +276,7 @@ func (w *wizard) Connect(ctx context.Context, serverURL, token string) (*server.
 	path := agentConfigPath(w.dataDir)
 	if serverURL == "" {
 		w.up.Stop()
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := agent.RemoveConfig(path); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -315,6 +300,7 @@ func (w *wizard) Connect(ctx context.Context, serverURL, token string) (*server.
 		return nil, fmt.Errorf(i18n.T(lang, "agent.unreachable"), cfg.Server, err)
 	}
 	cfg.Settings = hb.Settings
+	cfg.ServerID, cfg.AccountID = hb.ServerID, hb.User.ID
 	if err := agent.SaveConfig(path, cfg); err != nil {
 		return nil, err
 	}

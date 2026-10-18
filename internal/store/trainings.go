@@ -6,97 +6,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
-	"time"
+
+	"rocket-tracker/internal/domain"
 )
 
-// Training is time spent training instead of playing a match: detected in
-// the game (freeplay, training packs, workshop maps: offline, alone on the
-// field) or started with the dashboard's warm-up timer.
-type Training struct {
-	ID        int64     `json:"id"`
-	StartedAt time.Time `json:"started_at"`
-	EndedAt   time.Time `json:"ended_at"`
-	Source    string    `json:"source"`  // "game" or "timer"
-	Focus     string    `json:"focus"`   // the mechanic worked on (see Focuses); "" = not said
-	Profile   string    `json:"profile"` // the account (ProfileKey of a match); "" = not known
-	Arena     string    `json:"arena"`
-	// Touches and their ball speeds (uu/s), when detected in the game.
-	Touches     int     `json:"touches"`
-	AvgHitSpeed float64 `json:"avg_hit_speed"`
-	MaxHitSpeed float64 `json:"max_hit_speed"`
-}
+// Compatibility names for domain training values and rules.
+type Training = domain.Training
 
-// Focuses are the mechanics a training can be about.
-var Focuses = []string{"freeplay", "kickoff", "shooting", "saves", "aerials", "power", "boost", "dribble", "recovery", "rotation"}
+var Focuses = domain.Focuses
 
-// Training rules.
-const (
-	MaxTraining = 12 * time.Hour
-	// TrainingJoin: two trainings this close are one (the game's and the
-	// timer's record of the same warm-up, or a pack after freeplay).
-	TrainingJoin = 2 * time.Minute
-)
+const MaxTraining = domain.MaxTraining
+const TrainingJoin = domain.TrainingJoin
 
-// ErrInvalidTraining wraps the reasons a training is refused.
-var ErrInvalidTraining = errors.New("store: invalid training")
+var ErrInvalidTraining = domain.ErrInvalidTraining
 
-// ValidFocus reports whether f can be a training's focus.
-func ValidFocus(f string) bool {
-	return f == "" || slices.Contains(Focuses, f)
-}
-
-// Normalize cleans the fields and checks them.
-func (t *Training) Normalize() error {
-	t.StartedAt = t.StartedAt.UTC().Truncate(time.Second)
-	t.EndedAt = t.EndedAt.UTC().Truncate(time.Second)
-	t.Focus = strings.ToLower(strings.TrimSpace(t.Focus))
-	t.Profile = strings.ToLower(strings.TrimSpace(t.Profile))
-	switch {
-	case t.StartedAt.IsZero() || t.EndedAt.Before(t.StartedAt):
-		return fmt.Errorf("%w: invalid times", ErrInvalidTraining)
-	case t.EndedAt.Sub(t.StartedAt) > MaxTraining:
-		return fmt.Errorf("%w: longer than %v", ErrInvalidTraining, MaxTraining)
-	case t.Source != "game" && t.Source != "timer":
-		return fmt.Errorf("%w: source must be game or timer", ErrInvalidTraining)
-	case !ValidFocus(t.Focus):
-		return fmt.Errorf("%w: unknown focus %q", ErrInvalidTraining, t.Focus)
-	case len(t.Profile) > 200 || len(t.Arena) > 200:
-		return fmt.Errorf("%w: field too long", ErrInvalidTraining)
-	case t.Touches < 0 || t.AvgHitSpeed < 0 || t.MaxHitSpeed < 0:
-		return fmt.Errorf("%w: negative touches or speed", ErrInvalidTraining)
-	}
-	return nil
-}
-
-// merge folds o (the same warm-up, recorded again or by the other source)
-// into t.
-func (t *Training) merge(o *Training) {
-	if o.StartedAt.Before(t.StartedAt) {
-		t.StartedAt = o.StartedAt
-	}
-	if o.EndedAt.After(t.EndedAt) {
-		t.EndedAt = o.EndedAt
-	}
-	if o.Source == "game" {
-		t.Source = "game"
-	}
-	if t.Focus == "" {
-		t.Focus = o.Focus
-	}
-	if t.Profile == "" {
-		t.Profile = o.Profile
-	}
-	if t.Arena == "" {
-		t.Arena = o.Arena
-	}
-	if o.Touches > t.Touches {
-		t.Touches, t.AvgHitSpeed = o.Touches, o.AvgHitSpeed
-	}
-	t.MaxHitSpeed = max(t.MaxHitSpeed, o.MaxHitSpeed)
-}
+func ValidFocus(f string) bool { return domain.ValidFocus(f) }
 
 // TrainingImportKey identifies a training of a local database once imported
 // on a server, like ImportKey for matches.
@@ -135,6 +61,10 @@ func (sc *Scope) Trainings(ctx context.Context) ([]Training, error) {
 // a replayed upload changes nothing (even when a neighbor was merged into the
 // row since, or the focus was edited).
 func (sc *Scope) AddTraining(ctx context.Context, t *Training, key string) error {
+	return sc.addTraining(ctx, t, key, nil, false)
+}
+
+func (sc *Scope) addTraining(ctx context.Context, t *Training, key string, destination *domain.Destination, local bool) error {
 	if err := t.Normalize(); err != nil {
 		return err
 	}
@@ -146,24 +76,49 @@ func (sc *Scope) AddTraining(ctx context.Context, t *Training, key string) error
 		return err
 	}
 	defer tx.Rollback()
-	var (
-		id   int64
-		data string
-	)
-	err = tx.QueryRowContext(ctx, `SELECT id, data FROM trainings WHERE user_id = ? AND src_key = ? AND src_key != ''`, sc.uid, key).Scan(&id, &data)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = tx.QueryRowContext(ctx, `SELECT id, data FROM trainings WHERE user_id = ? AND started_at <= ? AND ended_at >= ?
-			ORDER BY started_at LIMIT 1`, sc.uid, t.EndedAt.Add(TrainingJoin).Format(tsLayout), t.StartedAt.Add(-TrainingJoin).Format(tsLayout)).Scan(&id, &data)
+	origin := recordingOrigin(destination, local)
+	originWhere := " AND COALESCE((SELECT o.destination FROM record_origins o WHERE o.user_id=trainings.user_id AND o.kind='training' AND o.record_id=trainings.id),'')=?"
+	profileWhere := " AND (?='' OR COALESCE(json_extract(data,'$.profile'),'') IN ('',?))"
+	bounds := " AND started_at>=? AND ended_at<=?"
+	common := []any{t.Profile, t.Profile, origin, t.EndedAt.Add(-MaxTraining).Format(tsLayout), t.StartedAt.Add(MaxTraining).Format(tsLayout)}
+	// A bounded split may leave several candidates. Skip an interval-full row
+	// instead of inserting another copy before reaching the replay's own row.
+	findMerge := func(query string, args []any) (int64, *Training, error) {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var data string
+			if err := rows.Scan(&id, &data); err != nil {
+				return 0, nil, err
+			}
+			var old Training
+			if err := json.Unmarshal([]byte(data), &old); err != nil {
+				return 0, nil, err
+			}
+			if old.Normalize() == nil && old.CanMerge(t) {
+				return id, &old, nil
+			}
+		}
+		return 0, nil, rows.Err()
 	}
-	if err == nil {
-		var old Training
-		if json.Unmarshal([]byte(data), &old) == nil {
-			old.merge(t)
-			*t = old
+	id, old, err := findMerge(`SELECT id,data FROM trainings WHERE user_id=? AND ?!='' AND (src_key=? OR EXISTS (SELECT 1 FROM training_sources k WHERE k.user_id=trainings.user_id AND k.record_id=trainings.id AND k.src_key=?))`+profileWhere+originWhere+bounds+` ORDER BY id`, append([]any{sc.uid, key, key, key}, common...))
+	if err != nil {
+		return err
+	}
+	if old == nil {
+		args := []any{sc.uid, t.EndedAt.Add(TrainingJoin).Format(tsLayout), t.StartedAt.Add(-TrainingJoin).Format(tsLayout)}
+		id, old, err = findMerge(`SELECT id,data FROM trainings WHERE user_id=? AND started_at<=? AND ended_at>=?`+profileWhere+originWhere+bounds+` ORDER BY started_at,id`, append(args, common...))
+		if err != nil {
+			return err
 		}
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+	if old != nil {
+		old.Merge(t)
+		*t = *old
 	}
 	t.ID = id
 	b, err := json.Marshal(t)
@@ -182,6 +137,20 @@ func (sc *Scope) AddTraining(ctx context.Context, t *Training, key string) error
 		}
 	}
 	if err != nil {
+		return err
+	}
+	if err := sc.persistOrigin(ctx, tx, "training", t.ID, origin); err != nil {
+		return err
+	}
+	if key != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO training_sources(user_id,src_key,record_id) VALUES(?,?,?)`, sc.uid, key, t.ID); err != nil {
+			return err
+		}
+	}
+	if err := t.Normalize(); err != nil {
+		return err
+	}
+	if err := sc.queueTrainingDelivery(ctx, tx, t, destination); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

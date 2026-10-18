@@ -26,7 +26,11 @@ Fixture et voisins vérifiés ; profil correct et états local/en attente/livré
 
 Revue architecture, impact joueur et exploitation ; ajouter la frontière sécurité lorsqu’elle est concernée. Vérifier les liens/commandes documentés. Une proposition, une intégration et une release restent des états distincts.
 
-## Prochaine action
+## État de la proposition
+
+La mise en œuvre et ses limites sont détaillées dans [la fiche de livraison](L8-analytics-complete.md). Les critères ci-dessus restent distincts de la qualification externe et de l’intégration.
+
+## Action de référence (préparation initiale)
 
 Sélectionner un cas requalifié et convenir de son oracle avant de modifier le calcul.
 

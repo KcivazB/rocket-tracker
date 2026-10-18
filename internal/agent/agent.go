@@ -7,13 +7,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +23,9 @@ import (
 
 // Config is agent.json in the data directory.
 type Config struct {
+	Generation   string `json:"generation,omitempty"` // setup identity; not an authentication secret
+	ServerID     string `json:"server_id,omitempty"`
+	AccountID    int64  `json:"account_id,omitempty"`
 	Server       string `json:"server"` // e.g. https://rl.example.com
 	Token        string `json:"token"`  // device token (rtk_...)
 	RLInstallDir string `json:"rl_install_dir"`
@@ -45,44 +45,6 @@ type Settings struct {
 // ErrNotConfigured is returned by LoadConfig when agent.json is missing.
 var ErrNotConfigured = errors.New("agent not configured: run `rltracker agent setup --server URL --token TOKEN`")
 
-// LoadConfig reads agent.json.
-func LoadConfig(path string) (*Config, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, ErrNotConfigured
-	} else if err != nil {
-		return nil, err
-	}
-	c := &Config{}
-	if err := json.Unmarshal(b, c); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if c.Server == "" || c.Token == "" {
-		return nil, ErrNotConfigured
-	}
-	if c.RLPort <= 0 || c.RLPort > 65535 {
-		c.RLPort = setup.DefaultPort
-	}
-	return c, nil
-}
-
-// SaveConfig writes agent.json (readable by the current user only where the
-// OS supports it: it holds the device token).
-func SaveConfig(path string, c *Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 // Agent runs the heartbeat and upload loops of a gaming PC.
 type Agent struct {
 	Options
@@ -90,7 +52,6 @@ type Agent struct {
 	mu        sync.Mutex
 	uploadMu  sync.Mutex // an upload pass vs a change of server
 	cfg       *Config
-	cfgMod    time.Time     // agent.json modification time last seen
 	autoIdent *AutoIdentity // detected, not yet confirmed by the server
 	reachable atomic.Bool   // the last heartbeat got an answer
 }
@@ -106,12 +67,14 @@ func New(cfg *Config, o Options) *Agent {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
-	return &Agent{Options: o, cfg: cfg}
+	return &Agent{Options: o, cfg: cloneConfig(cfg)}
 }
 
 // Options wires an agent. Tracker may be set after New (the tracker itself
 // is built with the agent's callbacks).
 type Options struct {
+	Journal DeliveryJournal
+
 	Client     *Client
 	Outbox     *Outbox
 	Tracker    *tracker.Tracker      // live match (may be nil)
@@ -127,7 +90,16 @@ type Options struct {
 func (a *Agent) Identity() tracker.Identity {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return tracker.Identity{Names: a.cfg.Settings.PlayerNames, IDs: a.cfg.Settings.PlayerIDs}
+	s := cloneSettings(a.cfg.Settings)
+	if a.autoIdent != nil && len(s.PlayerNames) == 0 && len(s.PlayerIDs) == 0 {
+		if a.autoIdent.Name != "" {
+			s.PlayerNames = []string{a.autoIdent.Name}
+		}
+		if a.autoIdent.PrimaryID != "" {
+			s.PlayerIDs = []string{a.autoIdent.PrimaryID}
+		}
+	}
+	return tracker.Identity{Names: s.PlayerNames, IDs: s.PlayerIDs}
 }
 
 // DefaultTag is the tag of new matches.
@@ -147,12 +119,6 @@ func (a *Agent) OnAutoIdentity(name, primaryID string) {
 	defer a.mu.Unlock()
 	if len(a.cfg.Settings.PlayerNames) > 0 || len(a.cfg.Settings.PlayerIDs) > 0 {
 		return
-	}
-	if name != "" {
-		a.cfg.Settings.PlayerNames = []string{name}
-	}
-	if primaryID != "" {
-		a.cfg.Settings.PlayerIDs = []string{primaryID}
 	}
 	a.autoIdent = &AutoIdentity{Name: name, PrimaryID: primaryID}
 }
@@ -192,6 +158,7 @@ const (
 
 // Run sends heartbeats and uploads the outbox until ctx is done.
 func (a *Agent) Run(ctx context.Context) {
+	a.Outbox.Wake() // resume already committed intents immediately after restart
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); a.heartbeatLoop(ctx) }()
@@ -239,12 +206,19 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			a.Outbox.Wake()
 		}
 		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		rep := a.report()
-		resp, err := a.Client.Heartbeat(rctx, rep)
+		a.uploadMu.Lock()
+		_, err := a.heartbeat(rctx)
+		a.uploadMu.Unlock()
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
 				return
+			}
+			if errors.Is(err, ErrConfigChanged) {
+				// Keep the normal reload cadence even if setup was removed. A
+				// missing file must not turn stale replies into a busy retry loop.
+				wait = HeartbeatEvery
+				continue
 			}
 			a.reachable.Store(false)
 			if reachable {
@@ -264,79 +238,105 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 			reachable = true
 			a.Outbox.Wake()
 		}
-		a.applySettings(resp.Settings, rep.AutoIdentity != nil)
 		wait = HeartbeatEvery
 	}
 }
 
-// reloadConfig picks up a new server or token written by `agent setup` while
-// the agent runs. It reports whether the target changed.
+// reloadConfig adopts the complete persisted configuration under uploadMu.
+// Read each pass: mtime can be unchanged and settings can change without a new
+// server/token. Local auto-detection is kept separate from persisted settings.
 func (a *Agent) reloadConfig() bool {
 	if a.ConfigPath == "" {
 		return false
 	}
-	fi, err := os.Stat(a.ConfigPath)
+	a.uploadMu.Lock()
+	defer a.uploadMu.Unlock()
+	c, err := LoadConfig(a.ConfigPath)
 	if err != nil {
+		if !errors.Is(err, ErrNotConfigured) {
+			a.Log.Warn("cannot reload agent configuration", "err", err)
+		}
 		return false
 	}
 	a.mu.Lock()
-	seen := a.cfgMod
-	a.cfgMod = fi.ModTime()
+	old := a.cfg
+	changed := c.Generation != old.Generation || c.Server != old.Server || c.Token != old.Token ||
+		c.ServerID != old.ServerID || c.AccountID != old.AccountID || c.RLInstallDir != old.RLInstallDir || c.RLPort != old.RLPort || !equalSettings(c.Settings, old.Settings)
 	a.mu.Unlock()
-	if seen.IsZero() || fi.ModTime().Equal(seen) {
+	if !changed {
 		return false
 	}
-	c, err := LoadConfig(a.ConfigPath)
-	if err != nil {
-		a.Log.Warn("agent.json changed but cannot be read", "err", err)
-		return false
-	}
-	server, token := a.Client.target()
-	if c.Server == server && c.Token == token {
-		return false
-	}
-	// No upload runs while the target changes: an entry read for the old
-	// server is never sent to the new one.
-	a.uploadMu.Lock()
-	defer a.uploadMu.Unlock()
-	if !sameServer(c.Server, server) {
+	server, _ := a.Client.target()
+	// Only the compatibility file library sets old queues aside. Production
+	// journal intents retain their own verified destination.
+	if a.Journal == nil && !sameServer(c.Server, server) {
 		if _, err := a.Outbox.SetDestination(c.Server, a.Log); err != nil {
-			a.Log.Error("cannot set aside the matches queued for the previous server: still sending to it", "err", err)
+			a.Log.Error("cannot set aside the previous server queue", "err", err)
 			return false
 		}
 	}
-	a.Client.SetTarget(c.Server, c.Token)
 	a.mu.Lock()
-	a.cfg.Server, a.cfg.Token = c.Server, c.Token
+	a.Client.SetTarget(c.Server, c.Token)
+	a.cfg, a.autoIdent = c, nil
 	a.mu.Unlock()
 	a.Log.Info("agent configuration reloaded", "server", c.Server)
 	return true
 }
 
-// applySettings keeps the server's settings (and saves them when they change).
-func (a *Agent) applySettings(s Settings, identitySent bool) {
+// ServerURL returns the current target without exposing shared configuration.
+func (a *Agent) ServerURL() string {
 	a.mu.Lock()
-	if identitySent {
+	defer a.mu.Unlock()
+	return a.cfg.Server
+}
+
+func (a *Agent) configSnapshot() *Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return cloneConfig(a.cfg)
+}
+
+// heartbeat runs under uploadMu, from request snapshot through response adoption.
+// No filesystem lock is held during the network request. Both identity and
+// settings use the same generation/target CAS before changing memory or disk.
+func (a *Agent) heartbeat(ctx context.Context) (*HeartbeatResponse, error) {
+	expected := a.configSnapshot()
+	expected.Server, expected.Token = a.Client.target()
+	rep := a.report()
+	hb, err := a.Client.Heartbeat(ctx, rep)
+	if err != nil {
+		return nil, err
+	}
+	if a.Journal != nil && (hb.ServerID == "" || hb.User.ID <= 0) {
+		return nil, errors.New("server does not provide a verified delivery identity; upgrade the server")
+	}
+	patch := func(c *Config) {
+		if a.Journal != nil {
+			c.ServerID, c.AccountID = hb.ServerID, hb.User.ID
+		}
+		c.Settings = cloneSettings(hb.Settings)
+	}
+	var next *Config
+	if a.ConfigPath != "" {
+		next, err = updateConfig(a.ConfigPath, expected, patch)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		next = expected
+		patch(next)
+	}
+	a.mu.Lock()
+	a.cfg = next
+	if a.autoIdent == rep.AutoIdentity {
 		a.autoIdent = nil
 	}
-	changed := !equalSettings(a.cfg.Settings, s)
-	a.cfg.Settings = s
-	cfg := *a.cfg
 	a.mu.Unlock()
-	if changed && a.ConfigPath != "" {
-		if err := SaveConfig(a.ConfigPath, &cfg); err != nil {
-			a.Log.Warn("could not save agent settings", "err", err)
-		} else if fi, err := os.Stat(a.ConfigPath); err == nil {
-			a.mu.Lock()
-			a.cfgMod = fi.ModTime() // our own write is not a reload
-			a.mu.Unlock()
-		}
-	}
+	return hb, nil
 }
 
 func equalSettings(x, y Settings) bool {
-	return x.DefaultTag == y.DefaultTag && strings.Join(x.PlayerNames, "\x00") == strings.Join(y.PlayerNames, "\x00") &&
-		strings.Join(x.PlayerIDs, "\x00") == strings.Join(y.PlayerIDs, "\x00")
+	return x.DefaultTag == y.DefaultTag && slices.Equal(x.PlayerNames, y.PlayerNames) && slices.Equal(x.PlayerIDs, y.PlayerIDs)
 }
 
 func (a *Agent) uploadLoop(ctx context.Context) {
@@ -373,6 +373,9 @@ func (a *Agent) uploadLoop(ctx context.Context) {
 func (a *Agent) uploadPending(ctx context.Context) (int, error) {
 	a.uploadMu.Lock()
 	defer a.uploadMu.Unlock()
+	if a.Journal != nil {
+		return a.uploadJournal(ctx)
+	}
 	items, err := a.Outbox.Pending()
 	if err != nil {
 		return 0, err

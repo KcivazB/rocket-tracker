@@ -6,7 +6,7 @@
 │ Rocket League ─ Stats API│            │ reverse proxy (TLS)          │     │ Authentik │
 │        │ localhost:49123 │            │        │                     │     │  (OIDC)   │
 │ rltracker ───────────────┼──────────► │ rltracker-server :8080 ◄─────┼────►│           │
-│  outbox\ (offline queue) │  device    │  SQLite /data                │sign-│           │
+│  SQLite delivery journal │  device    │  SQLite /data                │sign-│           │
 └──────────────────────────┘  token     └──────────────────────────────┘ in  └───────────┘
                                                  ▲ browsers (session cookie)
 ```
@@ -108,24 +108,34 @@ Each player:
    `rltracker agent setup --server https://rl.example.com --token rtk_…`;
 3. optionally uploads their old local matches: `rltracker agent import`.
 
-**Offline import.** When a gaming PC and the server never run at the same time (same machine, dual boot…), the
-agent's matches stay queued on the PC. Copy `%APPDATA%\RocketTracker\rltracker.db` (local mode) and/or the `.json`
-files of `%APPDATA%\RocketTracker\outbox\`, then either click **Import** in the dashboard and pick them, or put
-them in `data/import/` and run:
+**Offline import and recovery.** New desktop recordings use the local SQLite
+journal, committing the result and its delivery intent together. The agent
+verifies the server installation and account before uploading. Its token may
+rotate without changing that identity. Local status distinguishes pending,
+held, rejected and preserved legacy entries.
+
+For explicit history recovery, stop the desktop and follow the coherent backup
+procedure in [OPERATIONS.md](OPERATIONS.md). Copy its database bundle to a
+private location, or select preserved legacy `.json` queue files. After verifying
+the target account, click **Import** in that account's dashboard, or run:
 
 ```bash
 docker compose run --rm rocket-tracker import --user <handle> /data/import/rltracker.db /data/import/outbox
 ```
 
-Importing the same files again updates the matches instead of duplicating them. Once imported, the `.json` files
-can be deleted from the PC's `outbox\` (the agent would otherwise send them again, harmlessly, at its next connection).
+Imports converge on the same match/training identities and preserve edits. They
+are not a restoration of settings, credentials or journal state. Unknown legacy
+destinations remain held; today's token does not prove their owner. Keep sources
+until recovery is verified and separately authorize any cleanup. Downgrading to
+a binary which ignores the v8 journal is unsafe without a pre-migration backup.
+See [ADR-0002](decisions/0002-livraison-durable.md).
 
 A player can register several PCs. The status pill shows whether an agent is online and connected to the game;
 the Players page shows who is in a match right now.
 
 ### Ingestion errors
 
-Device match uploads are limited to 4 MiB and training uploads to 16 KiB,
+Device match uploads are limited to 4 MiB and training uploads to 512 KiB,
 including trailing whitespace. Each request must contain one JSON value.
 HTTP 400 means malformed/extra JSON or invalid match quantities; HTTP 413 means
 the complete JSON body exceeds its limit. Neither writes a match or training.
@@ -158,9 +168,11 @@ weekly post is remembered in `data/discord.json`.
 
 ## Backups and upgrades
 
-- Everything is in `data/rltracker-server.db` (SQLite, WAL). Back up the `data` folder, or online with
-  `sqlite3 data/rltracker-server.db ".backup backup.db"`.
-- Upgrade: `git pull && docker compose up -d --build`. The schema migrates automatically on start.
+- Back up the whole stopped data directory and private external configuration,
+  credentials and queues using [OPERATIONS.md](OPERATIONS.md). A SQLite-only
+  backup does not preserve the complete installation or its delivery identity.
+- Upgrade: `git pull && docker compose up -d --build`. Review migrations and
+  preserve a coherent backup first; schema migrations run automatically on start.
 
 ## Troubleshooting
 
@@ -171,4 +183,40 @@ weekly post is remembered in `data/discord.json`.
 | Redirect URI error on Authentik | `RT_PUBLIC_URL` differs from the URL in the browser, or the redirect URI is not registered. |
 | `cross-origin request refused` when saving | `RT_PUBLIC_URL` does not match the URL used in the browser (scheme, host, port). |
 | Agent: "device token refused" | The device was revoked: create a new token and run `rltracker agent setup` again. |
-| Agent: matches not arriving | `%APPDATA%\RocketTracker\agent.log` on the PC; queued matches wait in `outbox\` (and `outbox\rejected\` if the server refused them). |
+| Agent: matches not arriving | `%APPDATA%\RocketTracker\rltracker.log` on the PC and local status delivery counters. New intentions are in SQLite; legacy `outbox` sources are retained. See OPERATIONS.md before recovery. |
+
+## Import limits and backup restoration
+
+[OPERATIONS.md](OPERATIONS.md) documents the effective HTTP envelope, file,
+staging, concurrency and duration budgets, partial-progress responses, stopped
+coherent backups and isolated synthetic restoration. SQLite migrations/close
+are not preemptible; request admission limits are not a disk/RSS quota.
+[RELEASING.md](RELEASING.md) documents immutable build/test/publication handoff.
+
+## Authentication upgrade and recovery
+
+HTTPS uses `__Host-rt_session` and `__Host-rt_oauth` (Secure, HttpOnly,
+SameSite=Lax, Path=/, no Domain). Only an explicitly configured loopback HTTP
+public URL uses the older unprefixed development cookies. HTTPS ignores old
+`rt_session` cookies: sign in again after upgrading. Persisted sessions are not
+purged by the namespace change. Configure the canonical HTTPS root URL and use
+a browser that enforces cookie prefixes; ordinary remote HTTP is unsupported.
+
+The verified ID token must have a nonempty subject. If UserInfo supplies profile
+or groups, its subject must match that token; otherwise login fails. Correct the
+IdP configuration instead of weakening verification.
+
+Login transactions last ten minutes in memory and are consumed even when a
+callback fails. Start again at `/auth/login` after a failure or server restart.
+Existing persisted sessions survive restart. Login and callback must reach the
+same server instance: multiple replicas need affinity or a separately designed
+shared transaction store. A new login replaces the browser's previous binding;
+4096 pending transactions is the per-process ceiling. Return paths are limited
+to 2048 bytes (longer paths fall back to `/`) and retained as compact owned copies
+rather than retaining the full request query. HTTP 503 requires retry
+when transactions finish or expire (expired entries are pruned on login).
+
+Agent calls reject all HTTP redirects, including same-origin redirects. Set the
+canonical server URL directly and forward `/api/agent/*` without redirecting to a
+login page or another host, port or scheme. Correct the target/proxy and retry;
+a redirected upload remains pending in the local journal.

@@ -26,7 +26,11 @@ Chaque lot engagé a un scénario discriminant, un résultat attendu et un propr
 
 Revue architecture, impact joueur et exploitation ; ajouter la frontière sécurité lorsqu’elle est concernée. Vérifier les liens/commandes documentés. Une proposition, une intégration et une release restent des états distincts.
 
-## Prochaine action
+## État de la proposition
+
+La mise en œuvre et ses limites sont détaillées dans [la fiche de livraison](../REQUALIFICATION.md). Les critères ci-dessus restent distincts de la qualification externe et de l’intégration.
+
+## Action de référence (préparation initiale)
 
 Relever HEAD et associer les premiers cas S1/S2 à leurs tests courants.
 

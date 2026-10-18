@@ -1,6 +1,3 @@
-# On a v* tag: builds the Windows desktop app and the Linux server binary,
-# then publishes them as a GitHub release.
-#   git tag v1.2.3 && git push origin v1.2.3
 name: Release
 
 on:
@@ -8,49 +5,73 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: windows-latest  # the desktop package only builds on Windows
-    env:
-      CGO_ENABLED: '0'
-    defaults:
-      run:
-        shell: bash
+  version:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      value: ${{ steps.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Test
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          go vet ./...
-          go test ./...
-          node web/tests/i18n.test.js
-          node web/tests/analytics.test.js
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'value=%s\n' "${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build
+  validate:
+    needs: version
+    uses: ./.github/workflows/binaries.yml
+    with:
+      version: ${{ needs.version.outputs.value }}
+
+  publish:
+    name: Release verified binaries
+    needs: [version, validate]
+    if: >-
+      github.event_name == 'push' && github.ref_type == 'tag' &&
+      github.repository == 'KcivazB/rocket-tracker' &&
+      github.event.repository.fork == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check publication boundary
+        env:
+          EXPECTED_VERSION: ${{ needs.version.outputs.value }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p dist
-          GOOS=windows GOARCH=amd64 go build -trimpath \
-            -ldflags "-H windowsgui -s -w -X rocket-tracker/internal/buildinfo.Version=$VERSION" \
-            -o dist/rltracker.exe .
-          GOOS=linux GOARCH=amd64 go build -trimpath \
-            -ldflags "-s -w -X rocket-tracker/internal/buildinfo.Version=$VERSION" \
-            -o dist/rltracker-server-linux-amd64 ./cmd/rltracker-server
-
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = KcivazB/rocket-tracker
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = "refs/tags/v$EXPECTED_VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/windows
+      - name: Recheck artifact bytes and prepare public checksums
+        run: |
+          set -euo pipefail
+          (cd dist/linux && sha256sum -c SHA256SUMS)
+          (cd dist/windows && sha256sum -c SHA256SUMS)
+          cp dist/linux/rltracker-server-linux-amd64 dist/
+          cp dist/windows/rltracker.exe dist/
+          cd dist
+          sha256sum rltracker.exe rltracker-server-linux-amd64 > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           name: Rocket Tracker ${{ github.ref_name }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             dist/rltracker.exe
             dist/rltracker-server-linux-amd64
+            dist/SHA256SUMS

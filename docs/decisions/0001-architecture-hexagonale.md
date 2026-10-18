@@ -41,3 +41,13 @@ Préserver commandes, JSON, chemins de données, version injectable (voir [ADR-0
 ## Validation et mise en œuvre
 
 Vérifier imports/cycles, règles avec doubles, upload/import scoped et parcours Windows/serveur. Les séquences distinguent échec DB, checkpoint et livraison. Les fichiers Windows et l’arrêt/restart nécessitent leurs preuves propres. Aucun refactor achevé n’est déclaré par cet ADR ; les PR préciseront les tranches et couplages restants. Revoir si un autre consommateur ou une contrainte de plateforme rend les frontières inadaptées.
+
+## Mise en œuvre proposée et adoption
+
+Le code de cette proposition et les contrats actuels sont décrits dans
+[ARCHITECTURE.md](../ARCHITECTURE.md), [SPEC.md](../SPEC.md),
+[OPERATIONS.md](../OPERATIONS.md) et [RELEASING.md](../RELEASING.md).
+Les preuves finales sont liées dans le suivi d’implémentation et la PR.
+L’autorisation d’implémenter ne vaut pas acceptation des mainteneurs, intégration
+ou release. Pour ADR-0005, la séparation technique est appliquée ; politique de
+partage et intégration plateforme restent des décisions produit distinctes.

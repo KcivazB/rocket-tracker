@@ -4,7 +4,7 @@ Status: implemented locally; not merged or released. Base: `6f531fd43be3bcd6f3a7
 
 The shared match ingestion path rejects impossible quantities before persistence for device uploads, queued JSON and database imports. Signed coordinates and goal difference, absent historical telemetry and explicit zero remain valid. Invalid imported records are skipped individually; the import is not an all-or-nothing transaction.
 
-Device matches and trainings require exactly one JSON value and complete-body validation within 4 MiB / 16 KiB before writes. Unknown fields remain tolerated. Format errors return 400 and body-limit errors 413.
+Device matches and trainings require exactly one JSON value and complete-body validation within 4 MiB / 512 KiB before writes. Unknown fields remain tolerated. Format errors return 400 and body-limit errors 413.
 
 Before implementation, focused regression tests failed for negative quantities and trailing/oversized JSON on the original code. The implementation preserves the existing authorization and store convergence. Current contracts are documented in [SPEC](../../SPEC.md#agent-ingestion-and-offline-imports) and [self-hosting](../../SELF_HOSTING.md#ingestion-errors).
 

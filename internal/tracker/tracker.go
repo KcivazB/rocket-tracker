@@ -1,9 +1,10 @@
-// Package tracker turns the Stats API event stream into finished matches.
+// Package tracker turns pure game observations into finished matches.
 // It is pure logic (no I/O besides the injected callbacks) and uses an
 // injected clock so it can be unit tested deterministically.
 package tracker
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -14,8 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"rocket-tracker/internal/statsapi"
-	"rocket-tracker/internal/store"
+	"rocket-tracker/internal/domain"
 )
 
 // Identity is the configured "who am I".
@@ -29,8 +29,8 @@ type Options struct {
 	Now            func() time.Time
 	Identity       func() Identity
 	OnAutoIdentity func(name, primaryID string)
-	Save           func(*store.Match) error
-	SaveTraining   func(*store.Training) error
+	Save           func(*domain.Match) error
+	SaveTraining   func(*domain.Training) error
 	DefaultTag     func() string
 	Log            *slog.Logger
 }
@@ -52,13 +52,16 @@ type Tracker struct {
 	o  Options
 	mu sync.Mutex
 
-	cur       *match
-	postEnd   bool   // a match just ended (podium); ignore its trailing updates
-	endedGUID string // raw guid of the last ended match (online: ignored for good)
+	sourceUnit domain.SpeedUnit
+	cur        *match
+	postEnd    bool   // a match just ended (podium); ignore its trailing updates
+	endedGUID  string // raw guid of the last ended match (online: ignored for good)
 
 	// resumable is the last online match finished as abandoned (game crash,
 	// disconnect, left to the menu). If the same MatchGuid comes back
 	// (reconnect), tracking resumes on it instead of starting from scratch.
+	pending   []pendingRecord
+	saveErr   error
 	resumable *match
 }
 
@@ -100,31 +103,32 @@ type pstate struct {
 type rawGoal struct {
 	t         float64
 	overtime  bool
-	scorer    *statsapi.PlayerRef
-	assister  *statsapi.PlayerRef
+	scorer    *domain.PlayerRef
+	assister  *domain.PlayerRef
 	team      int  // -1 unknown
 	confirmed bool // team confirmed by a team score change in UpdateState
 	speed     float64
-	impact    *statsapi.Vec3
+	impact    *domain.Position
 }
 
 type rawFeed struct {
 	name string
-	ref  statsapi.PlayerRef
-	sec  *statsapi.PlayerRef // the other player (Demolish: the victim)
+	ref  domain.PlayerRef
+	sec  *domain.PlayerRef // the other player (Demolish: the victim)
 	t    float64
 }
 
 type rawHit struct {
-	ref   statsapi.PlayerRef
+	ref   domain.PlayerRef
 	t     float64
 	speed float64 // after the touch
 	pre   float64
 	has   bool
-	loc   *statsapi.Vec3
+	loc   *domain.Position
 }
 
 type match struct {
+	speedUnit domain.SpeedUnit
 	rawGUID   string
 	guid      string
 	online    bool
@@ -312,7 +316,7 @@ func (m *match) clockRunning(now time.Time) bool {
 	return now.Sub(m.lastTimeChange) <= ClockFrozenAfter
 }
 
-func playerKey(p *statsapi.Player) string {
+func playerKey(p *domain.ObservedPlayer) string {
 	if p.PrimaryID != "" {
 		return string(p.PrimaryID) + "/" + string(p.Name)
 	}
@@ -320,7 +324,7 @@ func playerKey(p *statsapi.Player) string {
 }
 
 // resolve finds the player referenced by Name+Shortcut+TeamNum.
-func (m *match) resolve(ref *statsapi.PlayerRef) *pstate {
+func (m *match) resolve(ref *domain.PlayerRef) *pstate {
 	if ref == nil || ref.Name == "" {
 		return nil
 	}
@@ -397,7 +401,7 @@ func (m *match) resolveMe(id Identity) (p *pstate, source string) {
 }
 
 // HandleEvent processes one event. It never panics.
-func (t *Tracker) HandleEvent(ev statsapi.Event) {
+func (t *Tracker) HandleEvent(ev domain.Observation) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	defer func() {
@@ -405,26 +409,37 @@ func (t *Tracker) HandleEvent(ev statsapi.Event) {
 			t.o.Log.Error("tracker: recovered panic", "event", ev.Name, "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
 		}
 	}()
+	unit := ev.SpeedUnit
+	if !unit.Valid() {
+		t.o.Log.Warn("tracker: unknown source speed unit", "unit", unit)
+		return
+	}
+	if unit == "" {
+		unit = domain.SpeedUnknown
+	}
+	if t.cur != nil && t.cur.speedUnit != unit {
+		t.o.Log.Warn("tracker: source speed unit changed during match", "current", t.cur.speedUnit, "incoming", unit)
+		return
+	}
+	t.retryPending()
+	t.sourceUnit = unit
 	now := t.o.Now()
 	switch ev.Name {
-	case statsapi.EvMatchCreated, statsapi.EvMatchInitialized:
-		var d statsapi.MatchGUIDOnly
-		_ = ev.Decode(&d)
-		t.onMatchStart(string(d.MatchGUID), now)
-	case statsapi.EvUpdateState:
-		var d statsapi.UpdateState
-		if err := ev.Decode(&d); err != nil {
-			t.o.Log.Debug("bad UpdateState", "err", err)
+	case domain.EvMatchCreated, domain.EvMatchInitialized:
+		t.onMatchStart(ev.MatchGUID, now)
+	case domain.EvUpdateState:
+		if ev.State != nil {
+			t.onUpdate(ev.State, now)
+		}
+	case domain.EvClockUpdatedSeconds:
+		d := ev.Clock
+		if d == nil {
 			return
 		}
-		t.onUpdate(&d, now)
-	case statsapi.EvClockUpdatedSeconds:
-		var d statsapi.ClockUpdated
-		_ = ev.Decode(&d)
 		if t.cur != nil && d.TimeSeconds != nil && t.sameMatch(string(d.MatchGUID)) {
 			t.cur.setClock(int(*d.TimeSeconds), bool(d.Overtime), now)
 		}
-	case statsapi.EvCountdownBegin:
+	case domain.EvCountdownBegin:
 		if t.cur != nil {
 			if !t.cur.haveTime {
 				t.cur.sawStart = true
@@ -433,7 +448,7 @@ func (t *Tracker) HandleEvent(ev statsapi.Event) {
 			t.cur.inRound = false
 			t.cur.kickoffSinceGoal = true
 		}
-	case statsapi.EvRoundStarted:
+	case domain.EvRoundStarted:
 		if t.cur != nil {
 			if !t.cur.haveTime {
 				t.cur.sawStart = true
@@ -443,29 +458,31 @@ func (t *Tracker) HandleEvent(ev statsapi.Event) {
 			t.cur.replay = false
 			t.cur.kickoffSinceGoal = true
 		}
-	case statsapi.EvGoalReplayStart:
+	case domain.EvGoalReplayStart:
 		if t.cur != nil {
 			t.cur.replay = true
 		}
-	case statsapi.EvGoalReplayEnd:
+	case domain.EvGoalReplayEnd:
 		if t.cur != nil {
 			t.cur.replay = false
 		}
-	case statsapi.EvMatchPaused:
+	case domain.EvMatchPaused:
 		if t.cur != nil {
 			t.cur.paused = true
 		}
-	case statsapi.EvMatchUnpaused:
+	case domain.EvMatchUnpaused:
 		if t.cur != nil {
 			t.cur.paused = false
 		}
-	case statsapi.EvGoalScored:
-		var d statsapi.GoalScored
-		_ = ev.Decode(&d)
-		t.onGoal(&d)
-	case statsapi.EvStatfeedEvent:
-		var d statsapi.StatfeedEvent
-		_ = ev.Decode(&d)
+	case domain.EvGoalScored:
+		if ev.Goal != nil {
+			t.onGoal(ev.Goal)
+		}
+	case domain.EvStatfeedEvent:
+		d := ev.Feed
+		if d == nil {
+			return
+		}
 		if t.cur != nil && d.EventName != "" && d.MainTarget.Valid() && t.sameMatch(string(d.MatchGUID)) {
 			f := rawFeed{name: string(d.EventName), ref: *d.MainTarget, t: t.cur.elapsed()}
 			if d.SecondaryTarget.Valid() {
@@ -474,18 +491,16 @@ func (t *Tracker) HandleEvent(ev statsapi.Event) {
 			}
 			t.cur.feeds = append(t.cur.feeds, f)
 		}
-	case statsapi.EvBallHit:
-		var d statsapi.BallHit
-		_ = ev.Decode(&d)
-		t.onBallHit(&d)
-	case statsapi.EvMatchEnded:
-		var d statsapi.MatchEnded
-		_ = ev.Decode(&d)
-		t.onMatchEnded(&d, now)
-	case statsapi.EvMatchDestroyed:
-		var d statsapi.MatchGUIDOnly
-		_ = ev.Decode(&d)
-		guid := string(d.MatchGUID)
+	case domain.EvBallHit:
+		if ev.Hit != nil {
+			t.onBallHit(ev.Hit)
+		}
+	case domain.EvMatchEnded:
+		if ev.End != nil {
+			t.onMatchEnded(ev.End, now)
+		}
+	case domain.EvMatchDestroyed:
+		guid := ev.MatchGUID
 		// A late MatchDestroyed for a previous match (e.g. "play again":
 		// the next match was created first) must not kill the current one.
 		stale := guid != "" && t.cur != nil && guid != t.cur.rawGUID && (t.cur.rawGUID != "" || guid == t.endedGUID)
@@ -528,7 +543,7 @@ func (t *Tracker) onMatchStart(guid string, now time.Time) {
 }
 
 func (t *Tracker) start(guid string, now time.Time) {
-	if r := t.resumable; r != nil && guid != "" && guid == r.rawGUID {
+	if r := t.resumable; r != nil && guid != "" && guid == r.rawGUID && r.speedUnit == t.sourceUnit {
 		t.resumable = nil
 		r.resume()
 		t.cur = r
@@ -537,6 +552,7 @@ func (t *Tracker) start(guid string, now time.Time) {
 	}
 	t.resumable = nil
 	t.cur = newMatch(guid, now)
+	t.cur.speedUnit = t.sourceUnit
 	t.o.Log.Info("match started", "guid", t.cur.guid, "online", t.cur.online)
 }
 
@@ -554,7 +570,7 @@ func (m *match) adoptGUID(guid string) {
 	m.online = true
 }
 
-func (t *Tracker) onUpdate(d *statsapi.UpdateState, now time.Time) {
+func (t *Tracker) onUpdate(d *domain.StateObservation, now time.Time) {
 	guid := string(d.MatchGUID)
 	if guid != "" && guid == t.endedGUID {
 		// Podium / scoreboard of the ended online match, possibly even after
@@ -669,7 +685,7 @@ func (t *Tracker) onUpdate(d *statsapi.UpdateState, now time.Time) {
 		}
 	}
 
-	// Movement sampling (only for players with spectator fields).
+	// Movement sampling requires car details or an observed demolition.
 	dt := 0.0
 	if !m.lastSample.IsZero() {
 		dt = now.Sub(m.lastSample).Seconds()
@@ -681,7 +697,7 @@ func (t *Tracker) onUpdate(d *statsapi.UpdateState, now time.Time) {
 	if dt > 0 && m.clockRunning(now) {
 		for i := range d.Players {
 			sp := &d.Players[i]
-			if !sp.HasSpectatorFields() {
+			if !sp.HasSpectatorFields() && sp.Demolished == nil {
 				continue
 			}
 			if p := m.players[playerKey(sp)]; p != nil {
@@ -691,7 +707,7 @@ func (t *Tracker) onUpdate(d *statsapi.UpdateState, now time.Time) {
 	}
 }
 
-func (t *Tracker) onGoal(d *statsapi.GoalScored) {
+func (t *Tracker) onGoal(d *domain.GoalObservation) {
 	m := t.cur
 	if m == nil || !t.sameMatch(string(d.MatchGUID)) {
 		return
@@ -704,8 +720,8 @@ func (t *Tracker) onGoal(d *statsapi.GoalScored) {
 		s := *d.Scorer
 		g.scorer = &s
 		g.team = int(s.TeamNum)
-	} else if d.BallLastTouch != nil && d.BallLastTouch.Player.Valid() {
-		g.team = int(d.BallLastTouch.Player.TeamNum)
+	} else if d.LastTouch.Valid() {
+		g.team = int(d.LastTouch.TeamNum)
 	}
 	// The game sends each goal twice: a full GoalScored and an empty one (no
 	// scorer, speed 0), at the same game time. The clock is stopped from a
@@ -744,7 +760,7 @@ func (t *Tracker) onGoal(d *statsapi.GoalScored) {
 	}
 }
 
-func (t *Tracker) onBallHit(d *statsapi.BallHit) {
+func (t *Tracker) onBallHit(d *domain.HitObservation) {
 	m := t.cur
 	if m == nil || !t.sameMatch(string(d.MatchGUID)) {
 		return
@@ -752,7 +768,7 @@ func (t *Tracker) onBallHit(d *statsapi.BallHit) {
 	if m.replay {
 		return // goal replays replay the touches: do not count them twice
 	}
-	refs := []statsapi.PlayerRef(d.Players)
+	refs := []domain.PlayerRef(d.Players)
 	if len(refs) == 0 && d.Player.Valid() {
 		refs = append(refs, *d.Player)
 	}
@@ -772,7 +788,7 @@ func (t *Tracker) onBallHit(d *statsapi.BallHit) {
 	}
 }
 
-func (t *Tracker) onMatchEnded(d *statsapi.MatchEnded, now time.Time) {
+func (t *Tracker) onMatchEnded(d *domain.EndObservation, now time.Time) {
 	if t.cur == nil {
 		return
 	}
@@ -806,7 +822,57 @@ func (t *Tracker) Disconnected() {
 }
 
 // Flush abandons the current match (used at shutdown).
-func (t *Tracker) Flush() { t.Disconnected() }
+func (t *Tracker) Flush() error {
+	t.Disconnected()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.retryPending()
+	return t.saveErr
+}
+
+// PendingRecords and SaveError expose recording failures independently of game
+// state. Pending snapshots live until commit; Flush retries them at shutdown.
+func (t *Tracker) PendingRecords() int { t.mu.Lock(); defer t.mu.Unlock(); return len(t.pending) }
+func (t *Tracker) SaveError() error    { t.mu.Lock(); defer t.mu.Unlock(); return t.saveErr }
+
+type pendingRecord struct {
+	result   *domain.Match
+	training *domain.Training
+}
+
+func (t *Tracker) retryPending() {
+	pending := t.pending
+	t.pending = nil
+	var failures []error
+	for _, p := range pending {
+		if err := t.savePending(p); err != nil {
+			t.pending = append(t.pending, p)
+			failures = append(failures, err)
+		}
+	}
+	t.saveErr = errors.Join(failures...)
+	if t.saveErr != nil {
+		t.o.Log.Error("recording failed; snapshots retained for retry", "pending", len(t.pending), "err", t.saveErr)
+	}
+}
+
+func (t *Tracker) savePending(p pendingRecord) (err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			err = fmt.Errorf("tracker: recording panicked; snapshot retained: %v", v)
+		}
+	}()
+	// Each attempt owns a deep copy. A failed record cannot block another
+	// independent result, including a permanently invalid training snapshot.
+	if p.training != nil {
+		if t.o.SaveTraining != nil {
+			return t.o.SaveTraining(cloneTraining(p.training))
+		}
+	} else if t.o.Save != nil {
+		return t.o.Save(cloneResult(p.result))
+	}
+	return nil
+}
 
 // finish builds and saves the current match. kind is "ended" or "abandoned".
 func (t *Tracker) finish(kind string, winner *int, now time.Time, why string) {
@@ -827,14 +893,9 @@ func (t *Tracker) finish(kind string, winner *int, now time.Time, why string) {
 		t.o.Log.Info("match not saved", "guid", m.guid, "why", why, "reason", reason)
 		return
 	}
-	if t.o.Save != nil {
-		if err := t.o.Save(res); err != nil {
-			t.o.Log.Error("saving match failed", "guid", res.GUID, "err", err)
-			return
-		}
-	}
-	t.o.Log.Info("match saved", "id", res.ID, "guid", res.GUID, "mode", res.Mode, "result", res.Result,
-		"score", fmt.Sprintf("%d-%d", res.TeamScore, res.OppScore), "forfeit", res.Forfeit, "why", why)
+	t.pending = append(t.pending, pendingRecord{result: cloneResult(res)})
+	t.retryPending()
+
 }
 
 // saveTraining keeps a training (time alone offline) long enough to count.
@@ -844,16 +905,12 @@ func (t *Tracker) saveTraining(m *match) {
 		t.o.Log.Info("training not saved", "seconds", m.lastUpdate.Sub(m.startedAt).Seconds())
 		return
 	}
-	if t.o.SaveTraining != nil {
-		if err := t.o.SaveTraining(tr); err != nil {
-			t.o.Log.Error("saving training failed", "err", err)
-			return
-		}
-	}
-	t.o.Log.Info("training saved", "minutes", tr.EndedAt.Sub(tr.StartedAt).Minutes(), "touches", tr.Touches, "arena", tr.Arena)
+	t.pending = append(t.pending, pendingRecord{training: cloneTraining(tr)})
+	t.retryPending()
+
 }
 
-func (t *Tracker) buildTraining(m *match) *store.Training {
+func (t *Tracker) buildTraining(m *match) *domain.Training {
 	if !m.trained() {
 		return nil
 	}
@@ -861,7 +918,7 @@ func (t *Tracker) buildTraining(m *match) *store.Training {
 	for _, x := range m.players {
 		p = x
 	}
-	tr := &store.Training{StartedAt: m.startedAt, EndedAt: m.lastUpdate, Source: "game", Arena: m.arena}
+	tr := &domain.Training{SpeedUnit: m.speedUnit, StartedAt: m.startedAt, EndedAt: m.lastUpdate, Source: "game", Arena: m.arena}
 	if id := strings.ToLower(strings.TrimSpace(p.primaryID)); id != "" {
 		tr.Profile = id
 	} else if n := strings.ToLower(strings.TrimSpace(p.name)); n != "" {
@@ -878,14 +935,13 @@ func (t *Tracker) buildTraining(m *match) *store.Training {
 		}
 	}
 	if n > 0 {
-		k := speedFactor(top, maxBallKmh)
-		tr.AvgHitSpeed, tr.MaxHitSpeed = round1(sum/float64(n)*k), round1(top*k)
+		tr.AvgHitSpeed, tr.MaxHitSpeed = round1(sum/float64(n)), round1(top)
 	}
 	return tr
 }
 
 // Build is exposed for tests: it computes the match record without saving.
-func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*store.Match, string) {
+func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*domain.Match, string) {
 	if len(m.players) == 0 {
 		return nil, "no players"
 	}
@@ -905,7 +961,8 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 	}
 
 	myTeam := me.team
-	out := &store.Match{
+	out := &domain.Match{
+		SpeedUnit: m.speedUnit,
 		GUID:      m.guid,
 		Online:    m.online,
 		StartedAt: m.startedAt,
@@ -1005,7 +1062,7 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 	maxMyTeamScore := math.MinInt
 	for _, p := range m.sortedPlayers() {
 		isMe := p == me
-		out.Players = append(out.Players, store.Player{
+		out.Players = append(out.Players, domain.Player{
 			Name: p.name, PrimaryID: p.primaryID, Team: p.team, Score: p.score, Goals: p.goals,
 			Shots: p.shots, Assists: p.assists, Saves: p.saves, Touches: p.touches, Demos: p.demos, IsMe: isMe,
 		})
@@ -1013,13 +1070,10 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 			maxMyTeamScore = p.score
 		}
 	}
-	out.Me = store.MeStats{Name: me.name, PrimaryID: me.primaryID, Score: me.score, Goals: me.goals, Shots: me.shots,
+	out.Me = domain.MeStats{Name: me.name, PrimaryID: me.primaryID, Score: me.score, Goals: me.goals, Shots: me.shots,
 		Assists: me.assists, Saves: me.saves, Touches: me.touches, Demos: me.demos}
 
 	out.Movement = me.mv.result()
-	if out.Movement != nil {
-		out.Movement.AvgSpeed = round1(out.Movement.AvgSpeed * speedFactor(me.mv.maxSpeed, maxCarKmh))
-	}
 
 	// Hits.
 	var hc, hsc int
@@ -1040,29 +1094,23 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 		}
 	}
 	if hc > 0 {
-		k := speedFactor(hmax, maxBallKmh)
-		out.Hits = &store.Hits{Count: hc, MaxSpeed: round1(hmax * k)}
+		out.Hits = &domain.Hits{Count: hc, MaxSpeed: round1(hmax)}
 		if hsc > 0 {
-			out.Hits.AvgSpeed = round1(hsum / float64(hsc) * k)
+			out.Hits.AvgSpeed = round1(hsum / float64(hsc))
 		}
 		for _, h := range mine {
 			if h.loc == nil || !h.has {
 				continue
 			}
 			v := fromSide(h.loc, myTeam)
-			out.Hits.Points = append(out.Hits.Points, store.HitPoint{T: round1(h.t), X: v.X, Y: v.Y, Z: v.Z,
-				Pre: whole(h.pre * k), Post: whole(h.speed * k)})
+			out.Hits.Points = append(out.Hits.Points, domain.HitPoint{T: round1(h.t), X: v.X, Y: v.Y, Z: v.Z,
+				Pre: whole(h.pre), Post: whole(h.speed)})
 		}
 	}
 
 	// Goals.
-	gmax := 0.0
 	for _, g := range m.goals {
-		gmax = max(gmax, g.speed)
-	}
-	gk := speedFactor(gmax, maxBallKmh)
-	for _, g := range m.goals {
-		sg := store.Goal{T: g.t, Speed: round1(g.speed * gk), Overtime: g.overtime}
+		sg := domain.Goal{T: g.t, Speed: round1(g.speed), Overtime: g.overtime}
 		switch {
 		case g.team == myTeam:
 			sg.Team = "us"
@@ -1091,21 +1139,21 @@ func (t *Tracker) build(m *match, kind string, winner *int, now time.Time) (*sto
 		if by == me {
 			out.Statfeed[f.name]++
 		}
-		if k := store.EventKind(f.name); k != "" {
+		if k := domain.EventKind(f.name); k != "" {
 			team := "them"
 			if feedTeam(by, &f.ref) == myTeam {
 				team = "us"
 			}
-			out.Events = append(out.Events, store.Event{T: round1(f.t), Kind: k, Team: team, Me: by == me})
+			out.Events = append(out.Events, domain.Event{T: round1(f.t), Kind: k, Team: team, Me: by == me})
 		}
 		if f.name != "Demolish" || f.sec == nil {
 			continue
 		}
 		switch victim := m.resolve(f.sec); {
 		case by == me && victim != nil && victim != me:
-			out.Demolitions = append(out.Demolitions, store.Demolition{T: round1(f.t), Player: victim.name, Mine: true})
+			out.Demolitions = append(out.Demolitions, domain.Demolition{T: round1(f.t), Player: victim.name, Mine: true})
 		case victim == me && by != nil && by != me:
-			out.Demolitions = append(out.Demolitions, store.Demolition{T: round1(f.t), Player: by.name})
+			out.Demolitions = append(out.Demolitions, domain.Demolition{T: round1(f.t), Player: by.name})
 		}
 	}
 	out.MVP = out.Statfeed["MVP"] > 0 || (out.Result == "win" && me.score >= maxMyTeamScore)
@@ -1126,8 +1174,8 @@ func round1(f float64) float64 { return math.Round(f*10) / 10 }
 
 // fromSide returns a field position seen from team's side: the blue team
 // (0) defends negative Y, so the orange team's positions are turned around.
-func fromSide(p *statsapi.Vec3, team int) store.Vec {
-	v := store.Vec{X: whole(float64(p.X)), Y: whole(float64(p.Y)), Z: whole(float64(p.Z))}
+func fromSide(p *domain.Position, team int) domain.Vec {
+	v := domain.Vec{X: whole(float64(p.X)), Y: whole(float64(p.Y)), Z: whole(float64(p.Z))}
 	if team == 1 {
 		v.X, v.Y = 0-v.X, 0-v.Y
 	}
@@ -1154,50 +1202,33 @@ const dupGoalWindow = 2
 
 // feedTeam is the team of a statfeed event's player: the resolved player's,
 // else the team number the event carries.
-func feedTeam(p *pstate, ref *statsapi.PlayerRef) int {
+func feedTeam(p *pstate, ref *domain.PlayerRef) int {
 	if p != nil {
 		return p.team
 	}
-	return int(ref.TeamNum)
+	return ref.TeamNum
 }
 
 // sameRef reports whether two optional player references are the same player.
-func sameRef(a, b *statsapi.PlayerRef) bool {
+func sameRef(a, b *domain.PlayerRef) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
 	return a.Name == b.Name && a.TeamNum == b.TeamNum
 }
 
-// The Stats API documents speeds in Unreal units/s, but the game sends km/h.
-// Stored speeds are uu/s (the JSON contract), so the unit is detected per
-// match from the largest value: a car tops out at ~83 km/h (2300 uu/s) and
-// ball hits/goals stay far below 250 km/h, while in uu/s they exceed these.
-const (
-	uuPerKmh   = 1 / 0.036
-	maxCarKmh  = 120.0
-	maxBallKmh = 250.0
-)
-
-// speedFactor returns the factor converting values whose largest is peak to uu/s.
-func speedFactor(peak, kmhLimit float64) float64 {
-	if peak > 0 && peak <= kmhLimit {
-		return uuPerKmh
-	}
-	return 1
-}
-
 // Live is the in-match snapshot exposed in /api/status.
 type Live struct {
-	GUID        string  `json:"guid"`
-	Mode        string  `json:"mode"`
-	Arena       string  `json:"arena"`
-	TimeSeconds int     `json:"time_seconds"`
-	Overtime    bool    `json:"overtime"`
-	TeamScore   int     `json:"team_score"`
-	OppScore    int     `json:"opp_score"`
-	MyTeam      int     `json:"my_team"`
-	Me          *LiveMe `json:"me"`
+	SpeedUnit   domain.SpeedUnit `json:"speed_unit"`
+	GUID        string           `json:"guid"`
+	Mode        string           `json:"mode"`
+	Arena       string           `json:"arena"`
+	TimeSeconds int              `json:"time_seconds"`
+	Overtime    bool             `json:"overtime"`
+	TeamScore   int              `json:"team_score"`
+	OppScore    int              `json:"opp_score"`
+	MyTeam      int              `json:"my_team"`
+	Me          *LiveMe          `json:"me"`
 	// ElapsedS is the game time played (s), overtime included; Partial: the
 	// tracking started mid-match (goals before it are missing).
 	ElapsedS float64 `json:"elapsed_s"`
@@ -1246,12 +1277,12 @@ type LiveStats struct {
 type LiveMe struct {
 	Name string `json:"name"`
 	LiveStats
-	// Movement so far (nil without car details).
-	Movement *store.Movement `json:"movement,omitempty"`
+	// Movement so far (nil without accepted car or demolition observations).
+	Movement *domain.Movement `json:"movement,omitempty"`
 }
 
 // LiveGoal is a goal of the live match. Team is the raw team number (-1
-// unknown); Speed is as sent by the game (km/h or uu/s).
+// unknown); Speed is as sent by the game (Live.SpeedUnit).
 type LiveGoal struct {
 	T        float64 `json:"t"`
 	Team     int     `json:"team"`
@@ -1277,7 +1308,7 @@ func (t *Tracker) Live() *Live {
 	if ts <= 0 {
 		ts = 1
 	}
-	l := &Live{GUID: m.guid, Mode: fmt.Sprintf("%dv%d", ts, ts), Arena: m.arena, TimeSeconds: m.timeSeconds, Overtime: m.overtime,
+	l := &Live{SpeedUnit: m.speedUnit, GUID: m.guid, Mode: fmt.Sprintf("%dv%d", ts, ts), Arena: m.arena, TimeSeconds: m.timeSeconds, Overtime: m.overtime,
 		ElapsedS: m.elapsed(), Partial: m.partial(), Training: m.training(), StartedAt: m.startedAt.UTC()}
 	if !l.Partial && m.haveTime {
 		l.RegulationS = m.regulation()
@@ -1286,9 +1317,6 @@ func (t *Tracker) Live() *Live {
 	if me != nil {
 		l.MyTeam = me.team
 		l.Me = &LiveMe{Name: me.name, LiveStats: me.liveStats(), Movement: me.mv.result()}
-		if l.Me.Movement != nil {
-			l.Me.Movement.AvgSpeed = round1(l.Me.Movement.AvgSpeed * speedFactor(me.mv.maxSpeed, maxCarKmh))
-		}
 	}
 	for tn, s := range m.teamScores {
 		if tn == l.MyTeam {
@@ -1316,7 +1344,7 @@ func (t *Tracker) Live() *Live {
 	}
 	l.Events = []LiveEvent{}
 	for _, f := range m.feeds {
-		if k := store.EventKind(f.name); k != "" {
+		if k := domain.EventKind(f.name); k != "" {
 			by := m.resolve(&f.ref)
 			l.Events = append(l.Events, LiveEvent{T: round1(f.t), Kind: k, Team: feedTeam(by, &f.ref), Me: me != nil && by == me})
 		}

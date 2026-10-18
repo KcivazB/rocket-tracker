@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -97,32 +98,37 @@ func TestHeartbeatSettingsAndRevocation(t *testing.T) {
 	if err := SaveConfig(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	ob, _ := OpenOutbox(filepath.Join(dir, "outbox"))
-	a := New(cfg, Options{Client: &Client{Server: ts.URL, Token: tok}, Outbox: ob, ConfigPath: cfgPath,
+	a := New(cfg, Options{Client: &Client{Server: ts.URL, Token: tok}, ConfigPath: cfgPath,
 		ConnStatus: func() (bool, string) { return true, "tcp" }})
 	a.OnAutoIdentity("VirgileRL", "Epic|v|0")
 	if id := a.Identity(); len(id.Names) != 1 || id.Names[0] != "VirgileRL" {
 		t.Fatalf("identity not applied locally: %+v", id)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { a.Run(ctx); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		raw, _ := st.UserSettings(context.Background(), u.ID)
-		if raw != "" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("auto identity never reached the server")
-		}
-		time.Sleep(50 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// A server-side settings write precedes the response and local persistence.
+	// The heartbeat returns only after its local CAS has committed; canceling
+	// Run when the server write appears can instead interrupt that response.
+	a.uploadMu.Lock()
+	_, err := a.heartbeat(ctx)
+	a.uploadMu.Unlock()
+	if err != nil {
+		t.Fatalf("heartbeat did not complete: %v", err)
 	}
-	cancel()
-	<-done
+	if raw, err := st.UserSettings(ctx, u.ID); err != nil || raw == "" {
+		t.Fatalf("auto identity not stored on the server: %v", err)
+	}
 	saved, err := LoadConfig(cfgPath)
-	if err != nil || len(saved.Settings.PlayerIDs) != 1 || saved.Settings.DefaultTag != "ranked" {
-		t.Fatalf("settings not cached: %+v %v", saved, err)
+	if err != nil {
+		t.Fatalf("cannot read cached settings: %v", err)
+	}
+	if !slices.Equal(saved.Settings.PlayerNames, []string{"VirgileRL"}) ||
+		!slices.Equal(saved.Settings.PlayerIDs, []string{"Epic|v|0"}) || saved.Settings.DefaultTag != "ranked" {
+		t.Fatalf("settings not cached: names=%d ids=%d default_tag=%q (configuration and credentials redacted)",
+			len(saved.Settings.PlayerNames), len(saved.Settings.PlayerIDs), saved.Settings.DefaultTag)
+	}
+	if a.report().AutoIdentity != nil {
+		t.Fatal("completed heartbeat retained the pending auto identity")
 	}
 
 	devs, _ := st.User(u.ID).Devices(context.Background())

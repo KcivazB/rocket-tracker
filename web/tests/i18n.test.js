@@ -68,3 +68,18 @@ assert.deepStrictEqual(RT.parseRoute('#/historique'), { view: 'history', id: nul
 assert.deepStrictEqual(RT.parseRoute('#/joueur/Bob/match/3'), { view: 'match', id: 3, player: 'bob' });
 assert.strictEqual(RT.routeHash('bob', 'history'), '#/player/bob/history');
 console.log('i18n ok: ' + Object.keys(M).length + ' keys, ' + used.size + ' used');
+
+// R2 dynamic duration labels, fixed destination and actionable timer recovery exist in both languages.
+for (const lang of ['fr', 'en']) {
+  I.setLang(lang);
+  assert.ok(I.t('live.pace', { minutes: 3 }).includes('3'));
+  assert.ok(!I.t('live.pace', { minutes: 3 }).includes('5'));
+  assert.ok(I.t('rank.fixedTarget', { v: 'Synthetic account' }).includes('Synthetic account'));
+  assert.ok(I.t('trn.timerBounds').includes('12') && I.t('trn.timerBounds').includes('4096'));
+  assert.ok(I.t('trn.timerPrecision').includes('60') && I.t('trn.timerPrecision').includes('300'));
+  assert.ok(I.t('trn.keptActivity', { v: 299 }).includes('299'));
+  for (const key of ['trn.pendingSave', 'trn.retrySave', 'trn.tooShort', 'trn.legacyActivity', 'trn.planFoot', 'live.perfRawSub', 'shared.retry', 'trn.exportTimer', 'trn.discardTimer', 'trn.confirmDiscardTimer', 'trn.rejectedSave', 'trn.invalidTimer', 'trn.limitTime', 'trn.limitIntervals', 'trn.timerPrecision', 'trn.timerBounds']) {
+    assert.notStrictEqual(I.t(key), key);
+  }
+}
+I.setLang('en');

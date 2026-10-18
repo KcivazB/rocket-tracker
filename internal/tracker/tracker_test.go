@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"rocket-tracker/internal/domain"
 	"rocket-tracker/internal/statsapi"
-	"rocket-tracker/internal/store"
 )
 
 // ---- harness ----
@@ -18,8 +18,8 @@ type harness struct {
 	t         *testing.T
 	now       time.Time
 	tr        *Tracker
-	saved     []*store.Match
-	trainings []*store.Training
+	saved     []*domain.Match
+	trainings []*domain.Training
 	id        Identity
 	auto      [][2]string
 }
@@ -30,12 +30,12 @@ func newHarness(t *testing.T) *harness {
 		Now:            func() time.Time { return h.now },
 		Identity:       func() Identity { return h.id },
 		OnAutoIdentity: func(n, id string) { h.auto = append(h.auto, [2]string{n, id}) },
-		Save: func(m *store.Match) error {
+		Save: func(m *domain.Match) error {
 			m.ID = int64(len(h.saved) + 1)
 			h.saved = append(h.saved, m)
 			return nil
 		},
-		SaveTraining: func(tr *store.Training) error {
+		SaveTraining: func(tr *domain.Training) error {
 			h.trainings = append(h.trainings, tr)
 			return nil
 		},
@@ -50,7 +50,7 @@ func (h *harness) send(name string, data any) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.tr.HandleEvent(statsapi.Event{Name: name, Data: b})
+	statsapi.ObserveEvents(h.tr.HandleEvent)(statsapi.Event{Name: name, Data: b})
 }
 
 type P struct {
@@ -104,7 +104,7 @@ func (h *harness) update(g G) {
 	h.send("UpdateState", map[string]any{"MatchGuid": g.Guid, "Players": ps, "Game": game})
 }
 
-func (h *harness) only() *store.Match {
+func (h *harness) only() *domain.Match {
 	h.t.Helper()
 	if len(h.saved) != 1 {
 		h.t.Fatalf("expected 1 saved match, got %d", len(h.saved))
@@ -570,7 +570,7 @@ func TestTimedShotsAndSavesOfBothTeams(t *testing.T) {
 	g = h.playClock(g, 199, 0)
 	h.send("MatchEnded", map[string]any{"WinnerTeamNum": 0})
 	m := h.only()
-	want := []store.Event{{T: 50, Kind: "shot", Team: "them"}, {T: 50, Kind: "save", Team: "us", Me: true},
+	want := []domain.Event{{T: 50, Kind: "shot", Team: "them"}, {T: 50, Kind: "save", Team: "us", Me: true},
 		{T: 100, Kind: "shot", Team: "us"}, {T: 100, Kind: "save", Team: "them"}}
 	if !reflect.DeepEqual(m.Events, want) {
 		t.Fatalf("events %+v, want %+v", m.Events, want)
@@ -614,7 +614,7 @@ func TestNeverPanicsOnGarbage(t *testing.T) {
 		{Name: "MatchDestroyed", Data: json.RawMessage(`[]`)},
 	}
 	for _, ev := range inputs {
-		h.tr.HandleEvent(ev)
+		statsapi.ObserveEvents(h.tr.HandleEvent)(ev)
 	}
 	h.tr.Disconnected()
 	_ = h.tr.Live()
@@ -952,19 +952,19 @@ func TestScoreNotInflatedByGoalCount(t *testing.T) {
 
 // Regression (real game): speeds arrive in km/h although documented as uu/s;
 // the dashboard showed 2 km/h average speed. Stored speeds are uu/s.
-func TestSpeedUnitDetection(t *testing.T) {
+func TestRawSpeedsDoNotInferUnit(t *testing.T) {
 	for _, c := range []struct {
 		name                    string
 		car, hit, goal          float64
 		wantCar, wantHit, wantG float64
 	}{
-		{"kmh", 60, 90, 100, 1666.7, 2500, 2777.8},
-		{"uu/s", 1500, 2000, 3000, 1500, 2000, 3000},
+		{"low amplitude unknown", 60, 90, 100, 60, 90, 100},
+		{"high amplitude unknown", 1500, 2000, 3000, 1500, 2000, 3000},
 	} {
 		h := newHarness(t)
 		h.id = Identity{Names: []string{"Me"}}
 		p := me
-		p.Spec = map[string]any{"bHasCar": true, "Speed": c.car, "Boost": 50, "bOnGround": true}
+		p.Spec = map[string]any{"bHasCar": true, "Speed": c.car, "Boost": 50, "bOnGround": true, "bOnWall": false, "bBoosting": false, "bPowersliding": false, "bDemolished": false, "bSupersonic": false}
 		g := h.playClock(G{Guid: "SPD" + c.name, Players: []P{p, op1}}, 300, 250)
 		h.send("BallHit", map[string]any{"Players": []any{me.ref()}, "Ball": map[string]any{"PostHitSpeed": c.hit}})
 		h.send("GoalScored", map[string]any{"Scorer": me.ref(), "GoalSpeed": c.goal})
@@ -975,7 +975,7 @@ func TestSpeedUnitDetection(t *testing.T) {
 		if m.Movement == nil || m.Hits == nil || len(m.Goals) != 1 {
 			t.Fatalf("%s: missing data %+v %+v %+v", c.name, m.Movement, m.Hits, m.Goals)
 		}
-		if m.Movement.AvgSpeed != c.wantCar || m.Hits.MaxSpeed != c.wantHit || m.Hits.AvgSpeed != c.wantHit || m.Goals[0].Speed != c.wantG {
+		if m.SpeedUnit != domain.SpeedUnknown || m.Movement.AvgSpeed != c.wantCar || m.Hits.MaxSpeed != c.wantHit || m.Hits.AvgSpeed != c.wantHit || m.Goals[0].Speed != c.wantG {
 			t.Fatalf("%s: car %v hit %v/%v goal %v", c.name, m.Movement.AvgSpeed, m.Hits.AvgSpeed, m.Hits.MaxSpeed, m.Goals[0].Speed)
 		}
 	}
@@ -1125,10 +1125,10 @@ func TestHitPointsImpactAndDemolitionsFromMySide(t *testing.T) {
 	if p := m.Hits.Points[0]; p.X != -1000 || p.Y != -4000 || p.Z != 93 || p.Pre != 500 || p.Post != 2500 || p.T != 10 {
 		t.Fatalf("point %+v", p)
 	}
-	if len(m.Goals) != 1 || m.Goals[0].Impact == nil || *m.Goals[0].Impact != (store.Vec{X: 500, Y: -5120, Z: 300}) {
+	if len(m.Goals) != 1 || m.Goals[0].Impact == nil || *m.Goals[0].Impact != (domain.Vec{X: 500, Y: -5120, Z: 300}) {
 		t.Fatalf("goals %+v", m.Goals)
 	}
-	want := []store.Demolition{{T: 20, Player: "Blue"}, {T: 20, Player: "Blue", Mine: true}}
+	want := []domain.Demolition{{T: 20, Player: "Blue"}, {T: 20, Player: "Blue", Mine: true}}
 	if len(m.Demolitions) != 2 || m.Demolitions[0] != want[0] || m.Demolitions[1] != want[1] {
 		t.Fatalf("demolitions %+v", m.Demolitions)
 	}

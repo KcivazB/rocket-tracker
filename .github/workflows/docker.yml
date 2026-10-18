@@ -1,62 +1,243 @@
-# Builds the server image (Dockerfile) and pushes it to the homelab Harbor.
-# Repository secrets: HARBOR_USERNAME / HARBOR_PASSWORD (a Harbor robot account
-# with push rights on the my-apps project).
 name: Docker image
 
 on:
+  pull_request:
   push:
     branches: [main, self-hosted]
     tags: ['v*']
-  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   REGISTRY: harbor.virgilebaisnee.fr
   IMAGE: harbor.virgilebaisnee.fr/my-apps/rocket-tracker
 
 jobs:
-  # The checks that run on Linux (same as ci.yml); the image is only pushed when they pass.
-  # The root package (desktop app) is Windows-only: its tests run in release.yml / ci.yml.
-  test:
+  build:
+    name: Build image archive
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      sha256: ${{ steps.seal.outputs.sha256 }}
+      image_id: ${{ steps.seal.outputs.image_id }}
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: version
+        name: Resolve image version
+        run: |
+          set -euo pipefail
+          version=dev
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Export without registry credentials
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          tags: rocket-tracker:ci
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+          build-args: VERSION=${{ steps.version.outputs.value }}
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - id: seal
+        name: Record archive checksum and image config digest
+        working-directory: ${{ runner.temp }}
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, tarfile
+          with tarfile.open('image.tar') as archive:
+              manifest = json.load(archive.extractfile('manifest.json'))
+              if len(manifest) != 1 or manifest[0]['RepoTags'] != ['rocket-tracker:ci']:
+                  raise SystemExit('expected one tagged single-platform image')
+              config = archive.extractfile(manifest[0]['Config']).read()
+          image_id = 'sha256:' + hashlib.sha256(config).hexdigest()
+          pathlib.Path('image-id.txt').write_text(image_id + '\n')
+          pathlib.Path('version.txt').write_text(os.environ['VERSION'] + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('image_id=' + image_id + '\n')
+          PY
+          sha256sum image.tar image-id.txt version.txt > SHA256SUMS
+          printf 'sha256=%s\n' "$(sha256sum image.tar | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/image.tar
+            ${{ runner.temp }}/image-id.txt
+            ${{ runner.temp }}/version.txt
+            ${{ runner.temp }}/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  tests:
+    name: Tests image packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Test
+      - name: Vet, Go tests and all frontend scripts
         run: |
+          set -euo pipefail
           go vet ./internal/... ./cmd/... ./web
           go test ./internal/... ./cmd/... ./web
           node web/tests/i18n.test.js
           node web/tests/analytics.test.js
+          node web/tests/profiles.test.js
+          node web/tests/polling.test.js
 
-  build:
-    needs: test
+  verify:
+    name: Tests offline image
+    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+      IMAGE_ID: ${{ needs.build.outputs.image_id }}
+      VERSION: ${{ needs.build.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      # The version without the tag's leading "v" (v0.19.0 -> 0.19.0), as release.yml does.
-      - id: version
-        run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"; fi
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact }}
+          path: image
+          merge-multiple: true
+      - name: Load and test the exported image without network access
+        working-directory: image
+        run: |
+          set -euo pipefail
+          printf '%s  image.tar\n' "$EXPECTED_SHA256" | sha256sum -c -
+          sha256sum -c SHA256SUMS
+          test "$(cat image-id.txt)" = "$IMAGE_ID"
+          test "$(cat version.txt)" = "$VERSION"
+          docker load --input image.tar
+          scan_container=$(docker create "$IMAGE_ID")
+          trap 'docker rm -f "$scan_container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$scan_container:/rltracker-server" "$RUNNER_TEMP/scanned-server"
+          go version -m "$RUNNER_TEMP/scanned-server"
+          GOTOOLCHAIN=local go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "$RUNNER_TEMP/scanned-server"
+          docker rm "$scan_container" >/dev/null
+          trap - EXIT
+          test "$(docker image inspect rocket-tracker:ci --format '{{.Id}}')" = "$IMAGE_ID"
+          test "$(docker run --rm --network none "$IMAGE_ID" --version)" = "$VERSION"
+          container=$(docker create --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /data:rw,uid=65532,gid=65532,mode=0700 \
+            --health-interval 1s --health-start-period 0s --health-retries 3 \
+            -e RT_LISTEN=127.0.0.1:8080 -e RT_PUBLIC_URL=http://127.0.0.1:8080 \
+            "$IMAGE_ID" --insecure-dev-login)
+          cleanup() {
+            status=$?
+            if [[ "$status" != 0 ]]; then docker logs "$container" || true; fi
+            docker rm -fv "$container" >/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+          docker start "$container" >/dev/null
+          # Success is the engine's healthy event, never elapsed time. Include
+          # historical events since creation so an early success is not lost.
+          timeout 60s python3 - "$container" <<'PY'
+          import json, subprocess, sys
+          container = sys.argv[1]
+          created = subprocess.check_output(
+              ['docker', 'inspect', '--format', '{{.Created}}', container], text=True).strip()
+          events = subprocess.Popen(
+              ['docker', 'events', '--since', created, '--filter', 'container=' + container,
+               '--format', '{{json .}}'], stdout=subprocess.PIPE, text=True)
+          try:
+              for line in events.stdout:
+                  action = json.loads(line)['Action']
+                  if action == 'health_status: healthy':
+                      break
+                  if action in ('die', 'destroy', 'health_status: unhealthy'):
+                      raise SystemExit('image failed before becoming healthy: ' + action)
+              else:
+                  raise SystemExit('Docker event stream ended before healthy')
+          finally:
+              events.terminate()
+              events.wait(timeout=5)
+          PY
+          docker exec "$container" /rltracker-server healthcheck
+          sha256sum -c SHA256SUMS
+          printf 'Tested image config: `%s`; archive SHA-256: `%s`; version: `%s`\n' \
+            "$IMAGE_ID" "$EXPECTED_SHA256" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
+  publish:
+    name: Release verified image
+    needs: [build, tests, verify]
+    # Serialize each ref; main and version tags also share the mutable latest
+    # alias. Build/Tests stay parallel and an active push is never cancelled.
+    concurrency:
+      group: docker-publish-${{ github.repository }}-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && 'main-and-version-tags' || github.ref }}
+      cancel-in-progress: false
+    if: >-
+      github.event_name == 'push' &&
+      github.repository == 'KcivazB/rocket-tracker' &&
+      github.event.repository.fork == false &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/self-hosted' ||
+       startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+      IMAGE_ID: ${{ needs.build.outputs.image_id }}
+    steps:
+      - name: Check publication boundary
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = KcivazB/rocket-tracker
+          test "$GITHUB_EVENT_NAME" = push
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/heads/self-hosted) ;;
+            refs/tags/v*) [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]] ;;
+            *) exit 1 ;;
+          esac
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact }}
+          path: image
+          merge-multiple: true
+      - name: Verify and load the tested archive
+        working-directory: image
+        run: |
+          set -euo pipefail
+          printf '%s  image.tar\n' "$EXPECTED_SHA256" | sha256sum -c -
+          sha256sum -c SHA256SUMS
+          test "$(cat image-id.txt)" = "$IMAGE_ID"
+          docker load --input image.tar
+          test "$(docker image inspect rocket-tracker:ci --format '{{.Id}}')" = "$IMAGE_ID"
+      - uses: docker/setup-buildx-action@v3
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -66,15 +247,80 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha
+      - name: Check authoritative ref before registry login
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: '1'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/verify-image-ref.py" <<'PY'
+          import json, os, re, subprocess
 
-      - uses: docker/build-push-action@v6
+          repo, ref, expected = (os.environ[k] for k in
+                                 ('GITHUB_REPOSITORY', 'GITHUB_REF', 'GITHUB_SHA'))
+          if repo != 'KcivazB/rocket-tracker' or not re.fullmatch(r'[0-9a-f]{40}', expected):
+              raise SystemExit('invalid publication repository or commit')
+          if ref not in ('refs/heads/main', 'refs/heads/self-hosted') and not re.fullmatch(
+                  r'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+', ref):
+              raise SystemExit('invalid publication ref')
+
+          def read_api(path):
+              # No checkout/ref cache or last-known-good fallback. API failures,
+              # missing refs and malformed responses must stop publication.
+              result = subprocess.run(
+                  ['gh', 'api', '--method', 'GET', path,
+                   '-H', 'Accept: application/vnd.github+json',
+                   '-H', 'Cache-Control: no-cache'],
+                  check=True, capture_output=True, text=True, timeout=30)
+              return json.loads(result.stdout)
+
+          remote = read_api('repos/' + repo + '/git/ref/' + ref.removeprefix('refs/'))
+          if remote['ref'] != ref:
+              raise SystemExit('remote returned a different publication ref')
+          obj = remote['object']
+          seen = set()
+          for _ in range(8):
+              kind, sha = obj['type'], obj['sha']
+              if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
+                  raise SystemExit('invalid remote object SHA')
+              if kind == 'commit':
+                  if sha != expected:
+                      raise SystemExit('publication ref advanced or moved; rebuild/test its current commit')
+                  print('Publication ref matches tested commit: ' + ref + ' @ ' + sha)
+                  break
+              if kind != 'tag' or not ref.startswith('refs/tags/') or sha in seen:
+                  raise SystemExit('publication ref does not resolve to a commit')
+              seen.add(sha)
+              obj = read_api('repos/' + repo + '/git/tags/' + sha)['object']
+          else:
+              raise SystemExit('publication tag chain exceeds the resolution limit')
+          PY
+          python3 "$RUNNER_TEMP/verify-image-ref.py"
+      - uses: docker/login-action@v3
         with:
-          context: .
-          push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.version.outputs.value }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+      - name: Push the tested image and verify registry manifests
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: '1'
+        run: |
+          set -euo pipefail
+          test -n "$TAGS"
+          while IFS= read -r tag; do
+            test -n "$tag"
+            # Recheck inside the publisher lock before every external write.
+            python3 "$RUNNER_TEMP/verify-image-ref.py"
+            docker tag "$IMAGE_ID" "$tag"
+            docker push "$tag"
+            descriptor=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}')
+            digest=$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$descriptor")
+            # Resolve by immutable manifest digest, then bind its config to the
+            # image ID checked by the offline test. No build occurs in this job.
+            docker buildx imagetools inspect "$IMAGE@$digest" --raw > manifest.json
+            jq -e --arg expected "$IMAGE_ID" '.config.digest == $expected' manifest.json >/dev/null
+            printf 'Published `%s@%s` (tested config `%s`)\n' \
+              "$IMAGE" "$digest" "$IMAGE_ID" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$TAGS"

@@ -13,7 +13,6 @@
   var ROLL_MIN = 5;
   var SESSION_GAP_MS = 30 * 60 * 1000;
   var DEFAULT_REG_S = 300; // regulation length of a standard match (s)
-  var UU_TO_KMH = 0.036;
   var DAY_MS = 86400000;
 
   var I18N = root.RT_I18N || (typeof require === 'function' ? require('./i18n.js') : null);
@@ -42,9 +41,27 @@
     var t = Date.parse(m.ended_at);
     return isNum(t) && t > 0 ? t : startMs(m) + num(m.duration_s) * 1000;
   }
-  function kmh(uu) { return isNum(uu) ? uu * UU_TO_KMH : null; }
-  // GoalSpeed unit is undocumented: values below 300 can only be km/h (300 uu/s is ~11 km/h).
-  function goalKmh(v) { return isNum(v) ? (v < 300 ? v : v * UU_TO_KMH) : null; }
+  // Historical records used a uu/s convention without verified provenance. Keep their cohort
+  // separate from new unknown observations and declared units; never infer or convert by magnitude.
+  function speedUnit(m) {
+    if (m && (m.speed_unit == null || m.speed_unit === '')) return 'legacy';
+    return m && (m.speed_unit === 'uu/s' || m.speed_unit === 'km/h') ? m.speed_unit : 'raw';
+  }
+  function speedUnitLabel(unit) { return unit === 'legacy' ? tr('unit.legacySpeed') : unit === 'raw' || !unit ? tr('unit.rawSpeed') : unit; }
+  function formatRawSpeed(v, unit) {
+    var label = unit === 'legacy' || unit === 'uu/s' || unit === 'km/h' ? unit : 'raw';
+    return isNum(v) ? fmtNum(v, 1) + ' ' + speedUnitLabel(label) : '—';
+  }
+  /** No arithmetic across incompatible units or historical/unknown cohorts. */
+  function commonSpeedUnit(ms) {
+    var units = [];
+    ms.forEach(function (m) {
+      var hasSpeed = m.movement && isNum(m.movement.avg_speed) || m.hits &&
+        (isNum(m.hits.avg_speed) || isNum(m.hits.max_speed) || hitPoints(m).some(function (p) { return p && (isNum(p.pre) || isNum(p.post)); }));
+      if (hasSpeed && units.indexOf(speedUnit(m)) < 0) units.push(speedUnit(m));
+    });
+    return units.length > 1 ? null : units[0] || 'raw';
+  }
   /** Regulation length (s) of a match: duration minus overtime when in OT (handles a regulation inferred ≠ 300 s). */
   function regulationS(m) {
     if (m && m.regulation_s > 0) return m.regulation_s;
@@ -57,7 +74,7 @@
   /** Duel filter: 'exclude' (default), 'include' or 'only'. */
   function duelOk(m, f) { return f === 'only' ? isDuel(m) : f === 'include' || !isDuel(m); }
   /** Matches whose stats can be compared with each other: same mode (or variant), duels apart. */
-  function modeGroup(m) { return modeKey(m) + (isDuel(m) ? ':duel' : ''); }
+  function modeGroup(m) { return JSON.stringify([m.variant || 'Soccar', m.mode || '', isDuel(m)]); }
   /**
    * fn(m) minus its mean over the matches of m's mode group in ms (null when missing): a 1v1 and a 3v3 value
    * are not on the same scale, so trends and comparisons across modes use these deviations.
@@ -86,8 +103,8 @@
   }
   /** True when goal g of match m was scored in overtime. */
   function isOtGoal(m, g) { return !!g.overtime || num(g.t) > regulationS(m); }
-  /** False when the goal list misses goals (tracker started mid-match): its timings and first goal are unreliable. */
-  function goalsComplete(m) { return !m.partial && (m.goals || []).length >= num(m.team_score) + num(m.opp_score); }
+  /** One eligibility rule for every inferred historical score, first goal and kickoff. */
+  function goalsComplete(m) { return liveTimelineComplete(m); }
   /** A goal within this many game seconds of a kickoff is a kickoff goal: the kickoff was lost by the team conceding it. */
   var KICKOFF_GOAL_S = 3;
   /** Goals of m in time order, those scored straight off a kickoff (match start, previous goal or overtime start) flagged `kickoff`. */
@@ -393,8 +410,9 @@
 
   function computeSituations(ms) {
     var dec = ms.filter(isDecided);
-    var firstUs = wl(dec.filter(function (m) { return m.first_goal === 'us' && goalsComplete(m); }));
-    var firstThem = wl(dec.filter(function (m) { return m.first_goal === 'them' && goalsComplete(m); }));
+    var first = dec.filter(goalsComplete);
+    var firstUs = wl(first.filter(function (m) { var g = sortedGoalsOf(m)[0]; return g && g.team === 'us'; }));
+    var firstThem = wl(first.filter(function (m) { var g = sortedGoalsOf(m)[0]; return g && g.team === 'them'; }));
     var close = wl(dec.filter(function (m) { return isNum(m.goal_diff) && Math.abs(m.goal_diff) <= 1; }));
     var big = wl(dec.filter(function (m) { return isNum(m.goal_diff) && Math.abs(m.goal_diff) >= 3; }));
     var otMs = dec.filter(function (m) { return m.overtime; });
@@ -410,7 +428,8 @@
         if (k.goal.team === 'them') ko.conceded++;
         if (k.kickoff && k.goal.team === 'us') ko.won++;
         if (k.kickoff && k.goal.team === 'them') { ko.lost++; lost++; }
-        return !isOtGoal(m, k.goal); // an overtime goal ends the match: no kickoff after it
+        // A terminal goal has no restart; the overtime-start kickoff is counted separately.
+        return !isOtGoal(m, k.goal) && num(k.goal.t) < Math.min(regulationS(m), num(m.duration_s) || regulationS(m));
       }).length;
       if (lost) koLostMs.push(m);
     });
@@ -432,10 +451,13 @@
     };
   }
 
-  /** Goals by game minute (0–1 … 4–5, then overtime), ours vs theirs. */
+  /** Goals by real game minute, followed by overtime, ours vs theirs. */
   function computeGoalsPerMinute(ms) {
-    var labels = ['0–1′', '1–2′', '2–3′', '3–4′', '4–5′', tr('goals.ot')];
-    var us = [0, 0, 0, 0, 0, 0], them = [0, 0, 0, 0, 0, 0];
+    var qualified = ms.filter(goalsComplete);
+    var minutes = qualified.reduce(function (n, m) { return Math.max(n, Math.ceil(regulationS(m) / 60)); }, 0) || 5;
+    var labels = [], us = [], them = [];
+    for (var i = 0; i < minutes; i++) { labels.push(i + '–' + (i + 1) + '′'); us.push(0); them.push(0); }
+    labels.push(tr('goals.ot')); us.push(0); them.push(0);
     var nGoals = 0, nMatches = 0;
     ms.forEach(function (m) {
       if (!goalsComplete(m)) return;
@@ -444,8 +466,8 @@
       (m.goals || []).forEach(function (g) {
         if (!g) return;
         var t = num(g.t);
-        // 5 regulation buckets (= minutes for the standard 300 s) + overtime.
-        var b = isOtGoal(m, g) ? 5 : Math.max(0, Math.min(4, Math.floor(t / reg * 5)));
+        // Terminal regulation goals belong to the last real minute; OT has its own bucket.
+        var b = isOtGoal(m, g) ? minutes : Math.min(Math.ceil(reg / 60) - 1, Math.floor(t / 60));
         if (g.team === 'us') us[b]++; else if (g.team === 'them') them[b]++; else return;
         nGoals++;
       });
@@ -454,12 +476,12 @@
   }
 
   var MECH_METRICS = [
-    { key: 'avg_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
+    { key: 'avg_speed', unit: 'raw', digits: 0, higherBetter: true },
     { key: 'supersonic_pct', unit: '%', digits: 1, higherBetter: true },
-    { key: 'air_pct', unit: '%', digits: 1, higherBetter: true },
+    { key: 'air_pct', unit: '%', digits: 1, higherBetter: null },
     { key: 'avg_boost', unit: '', digits: 0, higherBetter: null },
     { key: 'zero_boost_pct', unit: '%', digits: 1, higherBetter: false },
-    { key: 'hits_avg', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true, src: 'hits' }
+    { key: 'hits_avg', unit: 'raw', digits: 0, higherBetter: true, src: 'hits' }
   ];
 
   function mechValue(m, metric) {
@@ -471,22 +493,24 @@
   }
 
   function computeMechanics(ms) {
-    var withMove = ms.filter(function (m) { return m.movement || m.hits; });
+    var withMove = ms.filter(function (m) { return m.movement || m.hits; }), unit = commonSpeedUnit(ms);
     var metrics = MECH_METRICS.map(function (metric) {
-      var vals = withMove.map(function (m) { return mechValue(m, metric); });
+      var value = function (m) { return metric.unit === 'raw' && !unit ? null : mechValue(m, metric); };
+      var vals = withMove.map(value);
       var valid = vals.filter(isNum);
       // Trend on the deviations from each mode's mean: switching from 3v3 to 1v1 is not progress.
-      var devs = modeDeviations(withMove, function (m) { return mechValue(m, metric); }).filter(isNum);
+      var devs = modeDeviations(withMove, value).filter(isNum);
       var lastN = devs.slice(-ROLL_WINDOW), prevN = devs.slice(-2 * ROLL_WINDOW, -ROLL_WINDOW);
       var trend = (lastN.length >= ROLL_MIN && prevN.length >= ROLL_MIN) ? mean(lastN) - mean(prevN) : null;
       return {
-        key: metric.key, label: tr('mech.' + metric.key), unit: metric.unit, digits: metric.digits, higherBetter: metric.higherBetter,
+        key: metric.key, label: tr('mech.' + metric.key), unit: metric.unit === 'raw' ? unit || 'raw' : metric.unit, digits: metric.digits, higherBetter: metric.higherBetter,
         avg: mean(valid), n: valid.length, trend: trend,
-        series: rolling(withMove, function (m) { return mechValue(m, metric); })
+        series: rolling(withMove, value)
       };
     });
     var mv = ms.filter(function (m) { return m.movement; }).map(function (m) { return m.movement; });
-    var split = mv.filter(wallKnown); // the three shares from the same matches, so they add up
+    // All three shares must be available from the same matches, so the split adds up.
+    var split = mv.filter(function (x) { return wallKnown(x) && [x.ground_pct, x.wall_pct, x.air_pct].every(isNum); });
     var maxHit = ms.map(function (m) { return m.hits ? m.hits.max_speed : null; }).filter(isNum);
     return {
       n: withMove.length,
@@ -501,7 +525,7 @@
       fullBoostPct: mean(mv.map(function (x) { return x.full_boost_pct; })),
       powerslidePct: mean(mv.map(function (x) { return x.powerslide_pct; })),
       demolishedS: mean(mv.map(function (x) { return x.demolished_s; })),
-      maxHitKmh: maxHit.length ? kmh(Math.max.apply(null, maxHit)) : null
+      maxHitRaw: unit && maxHit.length ? Math.max.apply(null, maxHit) : null, speedUnit: unit
     };
   }
 
@@ -922,7 +946,7 @@
     { key: 'demos', lk: 'perf.demos', digits: 0, higherBetter: true }
   ];
   var MOVE_STATS = [
-    { key: 'avg_speed', lk: 'mech.avg_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
+    { key: 'avg_speed', lk: 'mech.avg_speed', unit: 'raw', digits: 0, higherBetter: true },
     { key: 'supersonic_pct', lk: 'mech.supersonic_pct', unit: '%', digits: 1, higherBetter: true },
     { key: 'avg_boost', lk: 'mech.avg_boost', unit: '', digits: 0, higherBetter: null },
     { key: 'zero_boost_pct', lk: 'mech.zero_boost_pct', unit: '%', digits: 1, higherBetter: false },
@@ -936,8 +960,8 @@
   ];
   var HIT_STATS = [
     { key: 'count', lk: 'hits.count', unit: '', digits: 0, higherBetter: null },
-    { key: 'avg_speed', lk: 'hits.avg_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true },
-    { key: 'max_speed', lk: 'hits.max_speed', unit: 'km/h', conv: kmh, digits: 0, higherBetter: true }
+    { key: 'avg_speed', lk: 'hits.avg_speed', unit: 'raw', digits: 0, higherBetter: true },
+    { key: 'max_speed', lk: 'hits.max_speed', unit: 'raw', digits: 0, higherBetter: true }
   ];
   function statLabel(s) { return tr(s.lk); }
   /** Value of stat s for match m from source 'me' | 'movement' | 'hits' (converted, null when missing). */
@@ -957,8 +981,8 @@
     var m = all[i];
     return baselineOf(all.slice(0, i), m.mode, m.variant, maxN, isDuel(m));
   }
-  /** Averages of the last (up to maxN) decided matches of a mode & variant in ms (chronological), Honor Duels apart. */
-  function baselineOf(ms, mode, variant, maxN, duel) {
+  /** Averages of the last decided matches in this mode/variant/duel cohort. Optional paceRegulation normalizes counts only. */
+  function baselineOf(ms, mode, variant, maxN, duel, paceRegulation) {
     var prev = [];
     variant = variant || 'Soccar';
     for (var j = ms.length - 1; j >= 0 && prev.length < maxN; j--) {
@@ -968,8 +992,12 @@
     function avgs(src, list) {
       var o = {};
       list.forEach(function (s) {
-        var vals = prev.map(function (x) { return statValue(x, src, s); }).filter(isNum);
-        o[s.key] = { avg: mean(vals), n: vals.length };
+        var unit = s.unit === 'raw' ? commonSpeedUnit(prev) : s.unit;
+        var vals = s.unit === 'raw' && !unit ? [] : prev.map(function (x) {
+          var v = statValue(x, src, s);
+          return src === 'me' && paceRegulation ? livePace(v, x.duration_s, false, paceRegulation) : v;
+        }).filter(isNum);
+        o[s.key] = { avg: mean(vals), n: vals.length, unit: unit };
       });
       return o;
     }
@@ -981,6 +1009,20 @@
 
   /* ---------- live match (pure) ---------- */
   var LIVE_DIFF_CAP = 3; // goal differences of 3 or more are grouped
+  /** Live-score comparisons require known teams/times and exactly the recorded final score.
+   *  Other result statistics can still use matches whose timeline is unqualified. */
+  function liveTimelineComplete(m) {
+    if (m.partial || !Array.isArray(m.goals) || !isNum(m.duration_s) || m.duration_s <= 0 ||
+        !Number.isInteger(m.team_score) || m.team_score < 0 || !Number.isInteger(m.opp_score) || m.opp_score < 0 ||
+        m.goals.length !== m.team_score + m.opp_score) return false;
+    var us = 0, them = 0;
+    var valid = m.goals.every(function (g) {
+      if (!g || !isNum(g.t) || g.t < 0 || g.t > m.duration_s) return false;
+      if (g.team === 'us') us++; else if (g.team === 'them') them++; else return false;
+      return true;
+    });
+    return valid && us === m.team_score && them === m.opp_score;
+  }
   var ODDS_Z = 1.645;    // 90 % Wilson interval around a live win rate
   /** Wilson score interval of w wins out of n: {lo, hi} (null without a match). */
   function wilson(w, n, z) {
@@ -999,7 +1041,7 @@
    */
   function liveOdds(all, mode, elapsed, diff, overtime, duel) {
     var ms = (all || []).filter(function (m) {
-      return m.online !== false && isDecided(m) && m.mode === mode && (m.variant || 'Soccar') === 'Soccar' && isDuel(m) === !!duel;
+      return m.online !== false && isDecided(m) && m.mode === mode && (m.variant || 'Soccar') === 'Soccar' && isDuel(m) === !!duel && liveTimelineComplete(m);
     });
     var withCi = function (r, ot) { return Object.assign(r, { ci: wilson(r.wins, r.n), overtime: ot }); };
     if (overtime) return withCi(wl(ms.filter(function (m) { return m.overtime; })), true);
@@ -1034,7 +1076,7 @@
   /** Live snapshot (/api/status live) as a match object for the match-page widgets: goals and players from my side. */
   function liveAsMatch(Lv) {
     var me = Lv.me || null, myTeam = Lv.my_team;
-    var reg = DEFAULT_REG_S, el = num(Lv.elapsed_s);
+    var reg = regulationS(Lv), el = num(Lv.elapsed_s);
     var players = (Lv.players || []).map(function (p) { return Object.assign({}, p); });
     if (me) players.unshift(Object.assign({ team: myTeam, is_me: true }, me));
     var goals = (Lv.goals || []).map(function (g) {
@@ -1045,8 +1087,9 @@
       };
     });
     return {
-      mode: Lv.mode, arena: Lv.arena, my_team: myTeam, team_score: num(Lv.team_score), opp_score: num(Lv.opp_score),
+      mode: Lv.mode, arena: Lv.arena, my_team: myTeam, regulation_s: reg, team_score: num(Lv.team_score), opp_score: num(Lv.opp_score),
       overtime: !!Lv.overtime, overtime_s: Lv.overtime ? Math.max(0, el - reg) : 0, duration_s: el, partial: !!Lv.partial,
+      speed_unit: Lv.speed_unit || 'unknown',
       online: true, me: me, players: players, goals: goals, movement: me && me.movement ? me.movement : null,
       // null from an agent that does not send the timed shots and saves yet (unknown, not none).
       events: Array.isArray(Lv.events) ? Lv.events.map(function (e) {
@@ -1109,8 +1152,8 @@
     return { win: win, elapsed: elapsed, us: us, them: them, signals: signals };
   }
   /** A count after `elapsed` game seconds projected to a regulation match (null in overtime or before a minute). */
-  function livePace(v, elapsed, overtime) {
-    return isNum(v) && !overtime && elapsed >= 60 ? v * DEFAULT_REG_S / elapsed : null;
+  function livePace(v, elapsed, overtime, regulation) {
+    return isNum(v) && !overtime && elapsed >= 60 ? v * (regulation || DEFAULT_REG_S) / elapsed : null;
   }
 
   /* ---------- on the field: touches, goal placement, demolitions (matches recorded since v0.16) ---------- */
@@ -1118,11 +1161,10 @@
   var FIELD = { x: 4096, y: 5120, z: 2044, goalX: 893, goalZ: 642 };
   var THIRD_Y = FIELD.y / 3;
   var AERIAL_Z = 300;       // the ball rests at z = 93: above 300 at the touch, it is an aerial touch
-  var POWER_UU = 100 / UU_TO_KMH; // a touch sending the ball over 100 km/h is a powerful one
+  // Preserve the historical raw threshold for analytics consumers, but do not display it as physical power.
+  var POWER_RAW_THRESHOLD = 2777.777777777778;
   var MAP_COLS = 6, MAP_ROWS = 8;
   function hitPoints(m) { return m && m.hits && Array.isArray(m.hits.points) ? m.hits.points : []; }
-  /** Recorded with the detailed data (touch positions): demolitions and goal impacts are known too. */
-  function isDetailed(m) { return hitPoints(m).length > 0; }
   function share(n, d) { return d > 0 ? n / d : null; }
 
   function computeTouches(ms) {
@@ -1144,7 +1186,7 @@
         if (num(p.z) > AERIAL_Z) out.aerial++;
         if (isNum(p.post)) {
           out.post.push(p.post);
-          if (p.post >= POWER_UU) out.powerful++;
+          if (p.post >= POWER_RAW_THRESHOLD) out.powerful++;
           if (isNum(p.pre)) out.gain.push(p.post - p.pre);
         }
         var c = Math.max(0, Math.min(MAP_COLS - 1, Math.floor((x + FIELD.x) / (2 * FIELD.x) * MAP_COLS)));
@@ -1156,8 +1198,9 @@
     out.defShare = share(out.def, out.n); out.midShare = share(out.mid, out.n); out.offShare = share(out.off, out.n);
     out.aerialShare = share(out.aerial, out.n);
     out.powerShare = share(out.powerful, out.post.length);
-    out.avgGain = mean(out.gain);
-    out.avgPost = mean(out.post);
+    out.speedUnit = commonSpeedUnit(ms);
+    out.avgGain = out.speedUnit ? mean(out.gain) : null;
+    out.avgPost = out.speedUnit ? mean(out.post) : null;
     out.offWin.share = share(out.offWin.off, out.offWin.n);
     out.offLoss.share = share(out.offLoss.off, out.offLoss.n);
     out.perMatch = share(out.n, out.matches);
@@ -1194,7 +1237,7 @@
   }
 
   function computeDemos(ms) {
-    var detailed = ms.filter(isDetailed);
+    var detailed = ms.filter(function (m) { return Array.isArray(m.demolitions); });
     var by = {}, on = {}, made = 0, taken = 0;
     var often = [], rarely = []; // matches with 2+ demolitions taken, and the others
     detailed.forEach(function (m) {
@@ -1259,20 +1302,20 @@
       return 100 * pts.filter(test).length / pts.length;
     };
   }
-  function speedKmh(m) { var v = mv('avg_speed')(m); return v == null ? null : kmh(v); }
-  function hitPowerKmh(m) { return m.hits && isNum(m.hits.avg_speed) ? kmh(m.hits.avg_speed) : null; }
+  function speedRaw(m) { return mv('avg_speed')(m); }
+  function hitPowerRaw(m) { return m.hits && isNum(m.hits.avg_speed) ? m.hits.avg_speed : null; }
   // focus: the training that works on it (see FOCUSES). Left out: what follows the score rather than drives it
   // (saves, defensive touches, demolitions taken, time demolished: a team under pressure has more of them).
   var FACTORS = [
     { key: 'zero_boost', lk: 'mech.zero_boost_pct', unit: '%', digits: 1, value: mv('zero_boost_pct'), focus: 'boost' },
     { key: 'avg_boost', lk: 'mech.avg_boost', unit: '', digits: 0, value: mv('avg_boost'), focus: 'boost' },
     { key: 'full_boost', lk: 'mech.full_boost_pct', unit: '%', digits: 1, value: mv('full_boost_pct'), focus: 'boost' },
-    { key: 'speed', lk: 'mech.avg_speed', unit: 'km/h', digits: 0, value: speedKmh, focus: 'recovery' },
+    { key: 'speed', lk: 'mech.avg_speed', unit: 'raw', digits: 0, value: speedRaw, focus: 'recovery' },
     { key: 'supersonic', lk: 'mech.supersonic_pct', unit: '%', digits: 1, value: mv('supersonic_pct'), focus: 'recovery' },
     { key: 'air', lk: 'mech.air_pct', unit: '%', digits: 1, value: mv('air_pct'), focus: 'aerials' },
     { key: 'wall', lk: 'mech.wall_pct', unit: '%', digits: 1, value: mv('wall_pct'), focus: 'recovery' },
     { key: 'powerslide', lk: 'mech.powerslide_pct', unit: '%', digits: 1, value: mv('powerslide_pct'), focus: 'recovery' },
-    { key: 'hit_power', lk: 'mech.hits_avg', unit: 'km/h', digits: 0, value: hitPowerKmh, focus: 'power' },
+    { key: 'hit_power', lk: 'mech.hits_avg', unit: 'raw', digits: 0, value: hitPowerRaw, focus: 'power' },
     { key: 'touches', lk: 'wf.touches5', unit: '', digits: 1, value: function (m) { return per5(m, me(m).touches); }, focus: 'dribble' },
     { key: 'shots', lk: 'wf.shots5', unit: '', digits: 1, value: function (m) { return per5(m, me(m).shots); }, focus: 'shooting' },
     { key: 'demos', lk: 'wf.demos5', unit: '', digits: 1, value: function (m) { return per5(m, me(m).demos); }, focus: 'rotation' },
@@ -1306,15 +1349,16 @@
   function computeWinFactors(ms) {
     var dec = ms.filter(isDecided);
     var rows = FACTORS.map(function (f) {
+      var unit = f.unit === 'raw' ? commonSpeedUnit(dec) : f.unit;
       var groups = {}, order = [];
       dec.forEach(function (m) {
-        var v = f.value(m);
+        var v = f.unit === 'raw' && !unit ? null : f.value(m);
         if (!isNum(v)) return;
         var k = modeGroup(m), x = { v: v, w: isWin(m) ? 1 : 0 };
         (groups[k] || (groups[k] = [])).push(x);
         order.push(x);
       });
-      var out = { key: f.key, lk: f.lk, unit: f.unit, digits: f.digits, focus: f.focus, n: order.length, enough: false };
+      var out = { key: f.key, lk: f.lk, unit: f.unit === 'raw' ? unit || 'raw' : f.unit, digits: f.digits, focus: f.focus, n: order.length, enough: false };
       var hi = [], lo = [], used = [], a = 0, e = 0, varSum = 0;
       Object.keys(groups).forEach(function (k) {
         var g = groups[k];
@@ -1395,23 +1439,25 @@
   var FATIGUE_STATS = [
     { key: 'winrate', lk: 'kpi.winrate', unit: '%', digits: 0, higherBetter: true, value: function (m) { return isDecided(m) ? (isWin(m) ? 100 : 0) : null; } },
     { key: 'touches', lk: 'wf.touches5', unit: '', digits: 1, higherBetter: true, value: function (m) { return per5(m, me(m).touches); } },
-    { key: 'speed', lk: 'mech.avg_speed', unit: 'km/h', digits: 0, higherBetter: true, value: speedKmh },
+    { key: 'speed', lk: 'mech.avg_speed', unit: 'raw', digits: 0, higherBetter: true, value: speedRaw },
     { key: 'zero_boost', lk: 'mech.zero_boost_pct', unit: '%', digits: 1, higherBetter: false, value: mv('zero_boost_pct') },
-    { key: 'hit_power', lk: 'mech.hits_avg', unit: 'km/h', digits: 0, higherBetter: true, value: hitPowerKmh },
+    { key: 'hit_power', lk: 'mech.hits_avg', unit: 'raw', digits: 0, higherBetter: true, value: hitPowerRaw },
     { key: 'goal_diff', lk: 'prog.goalDiff', unit: '', digits: 2, higherBetter: true, value: function (m) { return isDecided(m) && isNum(m.goal_diff) ? m.goal_diff : null; } }
   ];
   function computeSessionFatigue(ms) {
     var rows = FATIGUE_STATS.map(function (s) {
+      var unit = s.unit === 'raw' ? commonSpeedUnit(ms) : s.unit;
+      var value = function (m) { return s.unit === 'raw' && !unit ? null : s.value(m); };
       // Gaps on the deviations from each mode's mean: late in a session is often another mode.
-      var devs = modeDeviations(ms, s.value);
+      var devs = modeDeviations(ms, value);
       var cells = SESSION_BUCKETS.map(function (b) {
         var inB = function (m) { var i = m._sessIdx || 1; return i >= b[0] && i <= b[1]; };
-        var vals = ms.filter(inB).map(s.value).filter(isNum);
+        var vals = ms.filter(inB).map(value).filter(isNum);
         return { avg: mean(vals), n: vals.length, dev: mean(devs.filter(function (d, i) { return inB(ms[i]); })) };
       });
       var base = cells[0];
       cells.forEach(function (c, i) { c.delta = i && isNum(c.dev) && isNum(base.dev) && c.n >= 5 && base.n >= 5 ? c.dev - base.dev : null; });
-      return { key: s.key, lk: s.lk, unit: s.unit, digits: s.digits, higherBetter: s.higherBetter, cells: cells };
+      return { key: s.key, lk: s.lk, unit: s.unit === 'raw' ? unit || 'raw' : s.unit, digits: s.digits, higherBetter: s.higherBetter, cells: cells };
     });
     return { buckets: SESSION_BUCKETS, rows: rows };
   }
@@ -1420,9 +1466,49 @@
   var WARM_GAP_MS = 60 * 60 * 1000; // a training ending at most this long before a session's first match warms it up
   var WARM_MIN_S = 5 * 60;          // shorter trainings do not count as a warm-up
   var WARM_MIN_SESSIONS = 5;        // sessions needed on each side to compare
-  function trainingStart(t) { var v = Date.parse(t.started_at); return isNum(v) ? v : 0; }
-  function trainingEnd(t) { var v = Date.parse(t.ended_at); return isNum(v) ? v : trainingStart(t); }
-  function trainingSeconds(t) { return Math.max(0, (trainingEnd(t) - trainingStart(t)) / 1000); }
+  var WARM_MIN_MATCHES = 10;        // decided first-three matches needed on each side
+  var TRAINING_MAX_MS = 12 * 60 * 60 * 1000, TRAINING_MAX_INTERVALS = 4096;
+  function utcSecond(ms) { return Math.floor(ms / 1000) * 1000; }
+  function trainingStart(t) { var v = Date.parse(t.started_at); return isNum(v) ? utcSecond(v) : 0; }
+  function trainingEnd(t) { var v = Date.parse(t.ended_at); return isNum(v) ? utcSecond(v) : trainingStart(t); }
+  /** Match Go's UTC second endpoints before union, display or threshold decisions. */
+  function canonicalTraining(t) {
+    var start = Date.parse(t.started_at), end = Date.parse(t.ended_at);
+    if (!isNum(start) || !isNum(end) || end < start) return null;
+    var out = Object.assign({}, t, { started_at: new Date(utcSecond(start)).toISOString(), ended_at: new Date(utcSecond(end)).toISOString() });
+    if (t.active_intervals == null) return out;
+    if (!Array.isArray(t.active_intervals)) return null;
+    var intervals = [], invalid = false;
+    t.active_intervals.forEach(function (v) {
+      var a = v && Date.parse(v.started_at), b = v && Date.parse(v.ended_at);
+      if (!isNum(a) || !isNum(b) || a < start || b > end || b < a) { invalid = true; return; }
+      a = utcSecond(a); b = utcSecond(b);
+      if (b > a) intervals.push([a, b]);
+    });
+    if (invalid) return null;
+    intervals.sort(function (a, b) { return a[0] - b[0]; });
+    var union = [];
+    intervals.forEach(function (v) {
+      var last = union[union.length - 1];
+      if (last && v[0] <= last[1]) last[1] = Math.max(last[1], v[1]);
+      else union.push(v.slice());
+    });
+    out.active_intervals = union.map(function (v) { return { started_at: new Date(v[0]).toISOString(), ended_at: new Date(v[1]).toISOString() }; });
+    return out;
+  }
+  function trainingSeconds(t) {
+    var c = canonicalTraining(t);
+    if (!c) return 0;
+    if (c.active_intervals == null) return Math.max(0, (trainingEnd(c) - trainingStart(c)) / 1000);
+    return sum(c.active_intervals.map(function (v) { return (Date.parse(v.ended_at) - Date.parse(v.started_at)) / 1000; }));
+  }
+  function trainingLimit(t) {
+    if (!t || !isNum(Date.parse(t.started_at)) || !isNum(Date.parse(t.ended_at)) || Date.parse(t.ended_at) < Date.parse(t.started_at)) return 'trn.invalidTimer';
+    if (Date.parse(t.ended_at) - Date.parse(t.started_at) > TRAINING_MAX_MS) return 'trn.limitTime';
+    if (Array.isArray(t.active_intervals) && t.active_intervals.length > TRAINING_MAX_INTERVALS) return 'trn.limitIntervals';
+    if (!canonicalTraining(t)) return 'trn.invalidTimer';
+    return '';
+  }
   function planMinutes(blocks) { return sum((blocks || []).map(function (b) { return b.minutes; })); }
 
   /**
@@ -1479,8 +1565,18 @@
     });
     function done(o) { return { sessions: o.sessions, first: wl(o.first), all: wl(o.all), touches: mean(o.touches) }; }
     var w = done(warm), c = done(cold);
-    var enough = w.sessions >= WARM_MIN_SESSIONS && c.sessions >= WARM_MIN_SESSIONS && w.first.n >= 10 && c.first.n >= 10;
+    var enough = w.sessions >= WARM_MIN_SESSIONS && c.sessions >= WARM_MIN_SESSIONS && w.first.n >= WARM_MIN_MATCHES && c.first.n >= WARM_MIN_MATCHES;
     return { warm: w, cold: c, enough: enough, delta: enough ? w.first.wr - c.first.wr : null };
+  }
+
+  function warmupEffectMessage(e) {
+    if (!e.enough) return (!e.warm.sessions ? tr('trn.effectNone') + ' ' : '') + tr('trn.effectMore', {
+      sessions: WARM_MIN_SESSIONS, matches: WARM_MIN_MATCHES,
+      warmSessions: e.warm.sessions, coldSessions: e.cold.sessions,
+      warmMatches: e.warm.first.n, coldMatches: e.cold.first.n
+    });
+    var d = e.delta * 100;
+    return d >= 5 ? tr('trn.effectGood', { v: fmtNum(d) }) : d <= -5 ? tr('trn.effectBad', { v: fmtNum(-d) }) : tr('trn.effectFlat');
   }
 
   /** Training time over the last 7 and 30 days, against the time played, and per mechanic. */
@@ -1531,6 +1627,17 @@
     return h ? h + ' h' + (mnt ? ' ' + String(mnt).padStart(2, '0') : '') : mnt + ' min';
   }
 
+  /** Queue counts describe local intent, never acknowledgement by a remote destination. */
+  function deliveryMessage(delivery) {
+    var keys = ['pending', 'held', 'rejected', 'legacy_held'];
+    if (!delivery || !keys.every(function (k) { return Number.isSafeInteger(delivery[k]) && delivery[k] >= 0; })) return null;
+    var parts = [tr('st.deliveryLocal'), tr('st.deliveryCounts', delivery)];
+    if (delivery.pending) parts.push(tr('st.deliveryPending'));
+    if (delivery.held || delivery.legacy_held) parts.push(tr('st.deliveryHeld'));
+    if (delivery.rejected) parts.push(tr('st.deliveryRejected'));
+    return { text: parts.join(' '), attention: !!(delivery.held || delivery.legacy_held || delivery.rejected) };
+  }
+
   /**
    * What a /status reply says about the stored data: 'rev:<data_rev>' when the server sends a
    * revision (changes on any write), else the count under countKey (older server or agent), else null.
@@ -1546,10 +1653,10 @@
   function stripV(v) { return String(v || '').replace(/^v/, ''); }
 
   var api = {
-    dataMarker: dataMarker, needsReload: needsReload, stripV: stripV,
-    ROLL_WINDOW: ROLL_WINDOW, SESSION_GAP_MS: SESSION_GAP_MS, UU_TO_KMH: UU_TO_KMH, TAGS: TAGS, tagLabel: tagLabel, plural: plural,
+    deliveryMessage: deliveryMessage, dataMarker: dataMarker, needsReload: needsReload, stripV: stripV,
+    ROLL_WINDOW: ROLL_WINDOW, SESSION_GAP_MS: SESSION_GAP_MS, TAGS: TAGS, tagLabel: tagLabel, plural: plural,
     DEFAULT_FILTERS: DEFAULT_FILTERS, MECH_METRICS: MECH_METRICS,
-    isNum: isNum, ratio: ratio, regulationS: regulationS, isDuel: isDuel, wallKnown: wallKnown, modeDeviations: modeDeviations, mean: mean, wl: wl, kmh: kmh, annotate: annotate, modeKey: modeKey, filterMatches: filterMatches,
+    isNum: isNum, ratio: ratio, regulationS: regulationS, isDuel: isDuel, wallKnown: wallKnown, modeGroup: modeGroup, modeDeviations: modeDeviations, mean: mean, wl: wl, formatRawSpeed: formatRawSpeed, speedUnit: speedUnit, annotate: annotate, modeKey: modeKey, filterMatches: filterMatches,
     streaks: streaks, computeKpis: computeKpis, rolling: rolling, computeProgression: computeProgression,
     computeActivity: computeActivity, computeGoalDiffDist: computeGoalDiffDist, computeMental: computeMental,
     computeSituations: computeSituations, kickoffGoals: kickoffGoals, computeGoalsPerMinute: computeGoalsPerMinute, computeMechanics: computeMechanics,
@@ -1558,12 +1665,12 @@
     fmtClock: fmtClock, fmtHours: fmtHours, dayKey: dayKey,
     parseRoute: parseRoute, routeHash: routeHash, filterPlayers: filterPlayers, rankLeaders: rankLeaders, DEFAULT_HIST_FILTERS: DEFAULT_HIST_FILTERS, filterHistory: filterHistory, filterManualHistory: filterManualHistory,
     groupHistory: groupHistory, paginateGroups: paginateGroups, summarizeHistory: summarizeHistory, matchNeighbors: matchNeighbors,
-    matchContext: matchContext, matchBaseline: matchBaseline, statValue: statValue, PERF_STATS: PERF_STATS, MOVE_STATS: MOVE_STATS, HIT_STATS: HIT_STATS,
+    matchContext: matchContext, matchBaseline: matchBaseline, baselineOf: baselineOf, goalsComplete: goalsComplete, statValue: statValue, PERF_STATS: PERF_STATS, MOVE_STATS: MOVE_STATS, HIT_STATS: HIT_STATS,
     computeTouches: computeTouches, computeGoalPlacement: computeGoalPlacement, computeDemos: computeDemos, computeScoreStates: computeScoreStates,
     computeWinFactors: computeWinFactors, computeFocusSuggestions: computeFocusSuggestions, computeSessionFatigue: computeSessionFatigue,
     FACTORS: FACTORS, FOCUSES: FOCUSES, FATIGUE_STATS: FATIGUE_STATS,
     liveOdds: liveOdds, wilson: wilson, computeMomentum: computeMomentum, currentSession: currentSession, liveAsMatch: liveAsMatch, livePace: livePace,
-    buildWarmupPlan: buildWarmupPlan, sessionsWithWarmup: sessionsWithWarmup, computeWarmupEffect: computeWarmupEffect, computeTrainingSummary: computeTrainingSummary
+    canonicalTraining: canonicalTraining, trainingLimit: trainingLimit, trainingSeconds: trainingSeconds, buildWarmupPlan: buildWarmupPlan, sessionsWithWarmup: sessionsWithWarmup, computeWarmupEffect: computeWarmupEffect, warmupEffectMessage: warmupEffectMessage, computeTrainingSummary: computeTrainingSummary
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -1600,7 +1707,13 @@
     all: [],
     filtered: [],
     shared: {},       // server mode: match id -> other accounts that recorded it
+    lastShared: null,
+    sharedBusy: 0,
+    sharedFailed: false,
     ranks: [],        // rank / MMR entries of the viewed player, oldest first
+    lastRanks: null,
+    ranksBusy: 0,
+    ranksFailed: false,
     allRaw: [],       // every match of the viewed player, all accounts (state.all = the shown profile's, annotated)
     profiles: [],     // the viewed player's Rocket League accounts, most played first
     profile: 'all',   // the account shown: a profileKey or 'all'
@@ -1618,6 +1731,9 @@
     loaded: false,
     config: null,
     manual: [],
+    lastManual: null,
+    manualBusy: 0,
+    manualFailed: false,
     trainings: [],      // trainings of the viewed player, oldest first
     lastTrainings: null,
     trainingsBusy: 0,
@@ -1694,7 +1810,9 @@
           return r.text().then(function (txt) {
             var detail = '';
             try { detail = (JSON.parse(txt) || {}).error || ''; } catch (e) { /* not JSON */ }
-            throw new Error('HTTP ' + r.status + (detail ? ' : ' + detail : ''));
+            var error = new Error('HTTP ' + r.status + (detail ? ' : ' + detail : ''));
+            error.status = r.status;
+            throw error;
           });
         }
         if (r.status === 204) return null;
@@ -2093,11 +2211,17 @@
     var k = String(pid || '').trim().toLowerCase();
     return !!k && state.profiles.some(function (p) { return p.key === k; });
   }
-  /** Ranks of the shown account (older entries without one go to the main account). */
+  function rankProfile(r) { return String(r.profile || '').trim().toLowerCase(); }
+  function ranksForProfile(rs, key) { return (rs || []).filter(function (r) { return rankProfile(r) === key; }); }
+  function rankDestination() { return state.profile === 'all' ? mainProfile() : state.profile; }
+  function rankAccountLabel(key) {
+    if (!key) return tr('rank.unknownAccount');
+    var name = profileName(key);
+    return name !== key ? name + ' (' + key + ')' : key;
+  }
+  /** Unattributed legacy entries stay unknown, never implicitly assigned to the main account. */
   function profileRanks() {
-    if (state.profile === 'all' || state.profiles.length < 2) return state.ranks || [];
-    var main = mainProfile();
-    return (state.ranks || []).filter(function (r) { return r.profile === state.profile || (!r.profile && state.profile === main); });
+    return state.profile === 'all' ? state.ranks || [] : ranksForProfile(state.ranks, state.profile);
   }
 
   /* ---------- ranks & MMR (noted by the player) ---------- */
@@ -2170,17 +2294,20 @@
   function annotateRanks(rs) {
     return rs.map(function (r) { r._t = Date.parse(r.at); return r; }).sort(function (a, b) { return a._t - b._t || a.id - b.id; });
   }
-  /** Latest entry per playlist, plus the latest one before it with an MMR (for the delta). */
+  /** Independent history and MMR delta for each account and playlist. */
   function rankSummary(rs) {
-    var by = {};
+    var by = Object.create(null);
     rs.forEach(function (r) {
-      var s = by[r.playlist] || (by[r.playlist] = { playlist: r.playlist, last: null, tier: null, division: null, mmr: null, prevMmr: null, mmrAt: null, n: 0 });
+      var profile = rankProfile(r), key = JSON.stringify([profile, r.playlist]);
+      var s = by[key] || (by[key] = { profile: profile, playlist: r.playlist, last: null, tier: null, division: null, mmr: null, prevMmr: null, mmrAt: null, n: 0 });
       s.n++;
       s.last = r;
       if (isNum(r.tier)) { s.tier = r.tier; s.division = isNum(r.division) ? r.division : null; s.tierAt = r._t; }
       if (isNum(r.mmr)) { s.prevMmr = s.mmr; s.mmr = r.mmr; s.mmrAt = r._t; }
     });
-    return PLAYLISTS.filter(function (p) { return by[p]; }).map(function (p) { return by[p]; });
+    return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) {
+      return PLAYLISTS.indexOf(a.playlist) - PLAYLISTS.indexOf(b.playlist) || a.profile.localeCompare(b.profile);
+    });
   }
   function renderRanks() {
     var sec = $('#rank-section');
@@ -2195,7 +2322,7 @@
     $('#rank-cards').innerHTML = sum.length ? sum.map(function (s) {
       var delta = isNum(s.mmr) && isNum(s.prevMmr) ? s.mmr - s.prevMmr : null;
       return '<div class="card rank-card">' + rankIcon(s.tier, 56) +
-        '<div class="rank-card-body"><span class="kpi-label">' + esc(playlistLabel(s.playlist)) + '</span>' +
+        '<div class="rank-card-body"><span class="kpi-label">' + esc(playlistLabel(s.playlist)) + ' · ' + esc(rankAccountLabel(s.profile)) + '</span>' +
         '<span class="rank-card-name">' + (isNum(s.tier) ? esc(rankName(s.tier)) + divisionPips(s.division) : '<span class="muted">' + tr('rank.noRank') + '</span>') + '</span>' +
         '<span class="rank-card-mmr">' + (isNum(s.mmr) ? '<b class="num">' + fmtNum(s.mmr) + '</b> MMR' +
           (delta != null ? ' <span class="' + signCls(delta) + '">' + (delta > 0 ? '▲ ' : delta < 0 ? '▼ ' : '') + fmtSigned(delta) + '</span>' : '') : '<span class="muted">' + tr('rank.noMmr') + '</span>') + '</span>' +
@@ -2205,13 +2332,13 @@
     var log = $('#rank-log'), box = $('#rank-log-box');
     box.hidden = !rs.length;
     log.innerHTML = rs.slice().reverse().map(function (r) {
-      return '<li><span class="rank-log-when">' + esc(fmtDate(r._t, true)) + '</span><span class="rank-log-pl">' + esc(playlistLabel(r.playlist)) + '</span>' +
+      return '<li><span class="rank-log-when">' + esc(fmtDate(r._t, true)) + '</span><span class="rank-log-pl">' + esc(playlistLabel(r.playlist)) + ' · ' + esc(rankAccountLabel(rankProfile(r))) + '</span>' +
         '<span class="rank-log-what">' + (isNum(r.tier) ? rankIcon(r.tier, 22) + esc(rankFull(r)) : '') + (isNum(r.mmr) ? (isNum(r.tier) ? ' · ' : '') + fmtNum(r.mmr) + ' MMR' : '') + '</span>' +
         (own ? '<button type="button" class="del-btn" data-rank-del="' + r.id + '" title="' + esc(tr('tbl.delete')) + '" aria-label="' + esc(tr('tbl.delete')) + '">' + TRASH + '</button>' : '') + '</li>';
     }).join('');
   }
   function renderMmrChart(sum) {
-    var withMmr = sum.filter(function (s) { return isNum(s.mmr); }).map(function (s) { return s.playlist; });
+    var withMmr = sum.filter(function (s) { return isNum(s.mmr); }).map(function (s) { return s.playlist; }).filter(function (p, i, ps) { return ps.indexOf(p) === i; });
     var card = $('#rank-chart-card');
     card.hidden = !withMmr.length;
     if (!withMmr.length) { if (charts['c-mmr']) { charts['c-mmr'].destroy(); delete charts['c-mmr']; } return; }
@@ -2224,11 +2351,18 @@
       return '<button type="button" role="radio" data-rank-pl="' + p + '" aria-checked="' + (p === state.rankPl) + '">' + esc(playlistLabel(p)) + '</button>';
     }).join('');
     var pts = profileRanks().filter(function (r) { return r.playlist === state.rankPl && isNum(r.mmr); });
+    var groups = sum.filter(function (s) { return s.playlist === state.rankPl && isNum(s.mmr); });
+    var datasets = groups.map(function (s, i) {
+      var points = pts.filter(function (r) { return rankProfile(r) === s.profile; });
+      var color = T.series[i % T.series.length];
+      return { label: rankAccountLabel(s.profile), data: points.map(function (r) { return { x: r._t, y: r.mmr, rank: r }; }),
+        borderColor: color, backgroundColor: alpha(color, 0.10), fill: false, borderWidth: 2,
+        pointRadius: points.length > 40 ? 0 : 4, pointHoverRadius: 5, pointBackgroundColor: color,
+        pointBorderColor: T.surface, pointBorderWidth: 2, tension: 0.25, cubicInterpolationMode: 'monotone' };
+    });
     makeChart('c-mmr', {
       type: 'line',
-      data: { datasets: [{ label: 'MMR', data: pts.map(function (r) { return { x: r._t, y: r.mmr }; }), borderColor: T.us, backgroundColor: alpha(T.us, 0.10),
-        fill: 'origin', borderWidth: 2, pointRadius: pts.length > 40 ? 0 : 4, pointHoverRadius: 5, pointBackgroundColor: T.us, pointBorderColor: T.surface, pointBorderWidth: 2,
-        pointHoverBackgroundColor: T.us, pointHoverBorderColor: T.surface, tension: 0.25, cubicInterpolationMode: 'monotone' }] },
+      data: { datasets: datasets },
       options: {
         parsing: false,
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
@@ -2237,10 +2371,11 @@
           y: { grace: '8%', ticks: { color: T.muted, padding: 8, maxTicksLimit: 6, callback: function (v) { return fmtNum(v); } } }
         }),
         plugins: {
+          legend: { display: datasets.length > 1 },
           crosshair: { enabled: true },
           tooltip: { displayColors: false, callbacks: {
-            title: function (it) { return fmtDate(pts[it[0].dataIndex]._t, true); },
-            label: function (it) { var r = pts[it.dataIndex]; return fmtNum(r.mmr) + ' MMR' + (isNum(r.tier) ? ' · ' + rankFull(r) : ''); }
+            title: function (it) { return fmtDate(it[0].raw.x, true); },
+            label: function (it) { var r = it.raw.rank; return rankAccountLabel(rankProfile(r)) + ' · ' + fmtNum(r.mmr) + ' MMR' + (isNum(r.tier) ? ' · ' + rankFull(r) : ''); }
           } }
         }
       }
@@ -2254,48 +2389,64 @@
     if (m.variant === 'Dropshot') return 'dropshot';
     return ['1v1', '2v2', '3v3'].indexOf(m.mode) >= 0 ? m.mode : '';
   }
-  /** The session that just ended (30 min without a match, less than 12 h ago) and its playlists without an entry since. */
+  /** Session boundaries use every match of one account, before selecting ranked playlists. */
   function endedSession() {
-    var ms = state.all.filter(function (m) { return m.result !== 'abandoned' && matchPlaylist(m); });
+    var profile = rankDestination();
+    var ms = state.allRaw.filter(function (m) {
+      return profileKey(m) === profile && isNum(Date.parse(m.started_at)) && endMs(m) >= startMs(m);
+    }).slice().sort(function (a, b) { return startMs(a) - startMs(b); });
     if (!ms.length) return null;
-    var lastEnd = endMs(ms[ms.length - 1]), now = Date.now();
-    if (now - lastEnd < SESSION_GAP_MS || now - lastEnd > 12 * 3600 * 1000) return null;
-    var i = ms.length - 1;
-    while (i > 0 && ms[i]._t - endMs(ms[i - 1]) <= SESSION_GAP_MS) i--;
-    var start = ms[i]._t, count = {};
-    ms.slice(i).forEach(function (m) { var p = matchPlaylist(m); count[p] = (count[p] || 0) + 1; });
-    var noted = {};
-    profileRanks().forEach(function (r) { if (r._t >= start) noted[r.playlist] = true; });
+    var start = startMs(ms[0]), lastEnd = endMs(ms[0]), session = [];
+    ms.forEach(function (m) {
+      if (startMs(m) - lastEnd > SESSION_GAP_MS) { session = []; start = startMs(m); }
+      session.push(m);
+      lastEnd = session.length === 1 ? endMs(m) : Math.max(lastEnd, endMs(m));
+    });
+    var idle = Date.now() - lastEnd;
+    if (idle < SESSION_GAP_MS || idle > 12 * 3600 * 1000) return null;
+    var count = {}, noted = {};
+    session.forEach(function (m) {
+      var p = matchPlaylist(m);
+      if (p && m.result !== 'abandoned') count[p] = (count[p] || 0) + 1;
+    });
+    ranksForProfile(state.ranks, profile).forEach(function (r) { if (r._t >= start) noted[r.playlist] = true; });
     var todo = PLAYLISTS.filter(function (p) { return count[p] && !noted[p]; });
-    return todo.length ? { start: start, todo: todo, count: count } : null;
+    return todo.length ? { profile: profile, start: start, todo: todo, count: count } : null;
   }
   function renderRankPrompt() {
     var box = $('#rank-prompt');
     var s = readOnly() ? null : endedSession();
-    var key = s ? 'rt.rankPrompt.' + s.start : '';
+    var key = s ? 'rt.rankPrompt.' + s.profile + '.' + s.start : '';
     var dismissed = false;
     try { dismissed = !!(key && localStorage.getItem(key)); } catch (e) { /* storage unavailable */ }
     if (!s || dismissed) { box.innerHTML = ''; return; }
     box.innerHTML = '<div class="warning info rank-prompt"><span class="w-icon">★</span><div><strong>' + tr('rank.promptTitle') + '</strong>' +
-      '<p>' + tr('rank.promptText') + '</p><p class="w-actions">' + s.todo.map(function (p) {
+      '<p>' + esc(tr('profile.forAccount', { v: rankAccountLabel(s.profile) })) + ' · ' + tr('rank.promptText') + '</p><p class="w-actions">' + s.todo.map(function (p) {
         return '<button type="button" class="btn" data-rank-for="' + p + '">' + esc(playlistLabel(p)) + ' <small class="muted">' + plural(s.count[p], 'match') + '</small></button>';
       }).join(' ') + ' <button type="button" class="btn btn-ghost" data-rank-dismiss="' + esc(key) + '">' + tr('rank.promptLater') + '</button></p></div></div>';
   }
 
   /* rank dialog */
   var rankForm = { tier: null, family: null, level: 1, division: null };
+  var rankContext = null;
+  function currentRankContext(ctx) {
+    return ctx && ctx === rankContext && ctx.gen === state.gen && ctx.dataFor === state.dataFor && !readOnly();
+  }
   function openRankDialog(playlist) {
+    if (readOnly()) return;
+    rankContext = { profile: rankDestination(), gen: state.gen, dataFor: state.dataFor };
     var dlg = $('#rank-dialog'), f = $('#rank-form');
     var pl = playlist || state.rankPl || '2v2';
     f.elements.playlist.innerHTML = PLAYLISTS.map(function (p) { return '<option value="' + p + '"' + (p === pl ? ' selected' : '') + '>' + esc(playlistLabel(p)) + '</option>'; }).join('');
     prefillRank(pl);
-    $('#rank-account').textContent = state.profiles.length > 1 ? tr('profile.forAccount', { v: profileName(state.profile === 'all' ? mainProfile() : state.profile) }) : '';
+    $('#rank-account').textContent = tr('rank.fixedTarget', { v: rankAccountLabel(rankContext.profile) });
     $('#rank-msg').textContent = '';
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
   }
   /** Starts from the last entry of the playlist: usually only the division or the MMR changed. */
   function prefillRank(pl) {
-    var s = rankSummary(profileRanks()).filter(function (x) { return x.playlist === pl; })[0];
+    if (!rankContext) return;
+    var s = rankSummary(ranksForProfile(state.ranks, rankContext.profile)).filter(function (x) { return x.playlist === pl; })[0];
     var tier = s && isNum(s.tier) ? s.tier : null;
     rankForm = { family: tier == null ? null : rankFamily(tier), level: tier == null ? 1 : rankLevel(tier) || 1, division: s && isNum(s.division) ? s.division : null };
     $('#rank-form').elements.mmr.value = s && isNum(s.mmr) ? s.mmr : '';
@@ -2327,23 +2478,26 @@
   }
   function saveRank(e) {
     e.preventDefault();
-    var f = $('#rank-form'), msg = $('#rank-msg');
+    var f = $('#rank-form'), msg = $('#rank-msg'), ctx = rankContext;
+    if (!currentRankContext(ctx)) { msg.textContent = tr('rank.contextChanged'); msg.className = 'form-msg err'; return; }
     var tier = formTier(), mmrTxt = f.elements.mmr.value.trim();
     var mmr = mmrTxt === '' ? null : parseInt(mmrTxt, 10);
     if (tier == null && mmr == null) { msg.textContent = tr('rank.needOne'); msg.className = 'form-msg err'; return; }
     var hasDiv = tier != null && tier >= 1 && tier <= 21 && rankForm.division != null;
-    var body = { playlist: f.elements.playlist.value, profile: state.profile === 'all' ? mainProfile() : state.profile,
+    var body = { playlist: f.elements.playlist.value, profile: ctx.profile,
       tier: tier, division: hasDiv ? rankForm.division : null, mmr: mmr };
     msg.textContent = tr('common.saving'); msg.className = 'form-msg';
     if (MOCK) { body.id = Date.now(); body.at = new Date().toISOString(); state.ranks = annotateRanks(state.ranks.concat([body])); closeRank(); return; }
-    apiFetch('/api/ranks', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+    return apiFetch('/api/ranks', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+      if (!currentRankContext(ctx)) return;
       state.ranks = annotateRanks(state.ranks.concat([r]));
       state.rankPl = isNum(r.mmr) ? r.playlist : state.rankPl;
       closeRank();
       toast(tr('rank.saved'));
-    }).catch(function (err) { msg.textContent = tr('toast.saveFailed', { v: err.message }); msg.className = 'form-msg err'; });
+    }).catch(function (err) { if (currentRankContext(ctx)) { msg.textContent = tr('toast.saveFailed', { v: err.message }); msg.className = 'form-msg err'; } });
   }
   function closeRank() {
+    rankContext = null;
     var dlg = $('#rank-dialog');
     if (dlg.close) dlg.close(); else dlg.removeAttribute('open');
     renderRanks();
@@ -2668,7 +2822,7 @@
         datasets: { bar: { categoryPercentage: 0.6, barPercentage: 0.9 } },
         scales: baseScales({ x: { title: { display: true, text: tr('goals.minuteAxis'), color: T.muted, font: { size: 11.5 } } }, y: { beginAtZero: true, ticks: { precision: 0, color: T.muted, padding: 8, maxTicksLimit: 6 } } }),
         plugins: { tooltip: { callbacks: {
-          title: function (it) { var i = it[0].dataIndex; return i === 5 ? tr('goals.overtime') : tr('goals.minute', { v: g.labels[i] }); },
+          title: function (it) { var i = it[0].dataIndex; return i === g.labels.length - 1 ? tr('goals.overtime') : tr('goals.minute', { v: g.labels[i] }); },
           label: function (it) { return ' ' + tr('fmt.labelValue', { label: it.dataset.label, v: it.raw }) + ' (' + tr('goals.perMatch', { v: fmtNum(ratio(it.raw, g.matches), 2) }) + ')'; }
         } } }
       }
@@ -2867,20 +3021,20 @@
     var box = $('#mechanics');
     $('#mech-sub').textContent = mc.n ? tr('mech.sub', { v: plural(mc.n, 'match') }) : tr('mech.none');
     box.innerHTML = mc.metrics.map(function (m, i) {
-      var v = m.unit === '%' ? fmtPct100(m.avg, m.digits) : fmtNum(m.avg, m.digits) + (m.unit ? '<span class="unit">' + m.unit + '</span>' : '');
+      var v = m.unit === '%' ? fmtPct100(m.avg, m.digits) : fmtNum(m.avg, m.digits) + (m.unit ? '<span class="unit">' + unitLabel(m.unit) + '</span>' : '');
       var trend = '';
       if (isNum(m.trend)) {
         var good = m.higherBetter == null ? null : (m.trend > 0) === m.higherBetter;
         var small = Math.abs(m.trend) < Math.pow(10, -m.digits) * 0.5;
         trend = small ? tr('mech.stable')
-          : tr('mech.vsPrev', { v: '<span class="' + (good == null ? '' : good ? 'up' : 'down') + '">' + (m.trend >= 0 ? '▲ ' : '▼ ') + fmtSigned(m.trend, m.digits) + (m.unit === '%' ? ' pt' : m.unit ? ' ' + m.unit : '') + '</span>' });
+          : tr('mech.vsPrev', { v: '<span class="' + (good == null ? '' : good ? 'up' : 'down') + '">' + (m.trend >= 0 ? '▲ ' : '▼ ') + fmtSigned(m.trend, m.digits) + (m.unit === '%' ? ' pt' : m.unit ? ' ' + unitLabel(m.unit) : '') + '</span>' });
       } else trend = m.n ? plural(m.n, 'match') : tr('mech.noData');
       return '<div class="card mech"><span class="kpi-label">' + esc(m.label) + '</span><span class="kpi-value">' + v + '</span>' +
         '<span class="trend">' + trend + '</span><div class="spark"><canvas id="sp-mech-' + i + '"></canvas></div></div>';
     }).join('');
     mc.metrics.forEach(function (m, i) {
       var cv = document.getElementById('sp-mech-' + i);
-      if (hasData(m.series)) sparkline(cv, m.series, T.us, m.label, function (x) { return m.unit === '%' ? fmtPct100(x, m.digits) : fmtNum(x, m.digits) + (m.unit ? ' ' + m.unit : ''); });
+      if (hasData(m.series)) sparkline(cv, m.series, T.us, m.label, function (x) { return m.unit === '%' ? fmtPct100(x, m.digits) : fmtNum(x, m.digits) + (m.unit ? ' ' + unitLabel(m.unit) : ''); });
       else { if (charts[cv.id]) { charts[cv.id].destroy(); delete charts[cv.id]; } }
     });
     // ground / wall / air split
@@ -2893,13 +3047,13 @@
     ];
     var fact = function (label, v) { return '<span>' + label + ' <b>' + v + '</b></span>'; };
     $('#split').innerHTML = tot > 0 ?
-      '<div class="split-head"><span class="card-title">' + tr('mech.split') + '</span><span class="legend">' +
+      '<div class="split-head"><span class="card-title">' + tr('mech.splitAverage') + '</span><span class="legend">' +
       segs.map(function (g) { return '<span><i style="background:' + g.color + '"></i>' + g.label + ' ' + fmtPct100(g.v, 0) + '</span>'; }).join('') + '</span></div>' +
       '<div class="split-bar">' + segs.map(function (g) { return '<span style="width:' + ((g.v || 0) / tot * 100).toFixed(2) + '%;background:' + g.color + '" title="' + esc(tr('fmt.labelValue', { label: g.label, v: fmtPct100(g.v, 1) })) + '"></span>'; }).join('') + '</div>' +
       '<div class="detail-facts">' + fact(tr('mech.boosting_pct'), fmtPct100(mc.boostingPct, 1)) + fact(tr('mech.full_boost_pct'), fmtPct100(mc.fullBoostPct, 1)) +
       fact(tr('mech.powerslide_pct'), fmtPct100(mc.powerslidePct, 1)) +
       '<span>' + tr('mech.demolished_s') + ' <b>' + fmtNum(mc.demolishedS, 1) + ' s</b> ' + tr('mech.perMatch') + '</span>' +
-      fact(tr('mech.hardestHit'), fmtNum(mc.maxHitKmh) + ' km/h') + '</div>'
+      fact(tr('mech.hardestHit'), formatRawSpeed(mc.maxHitRaw, mc.speedUnit)) + '</div>'
       : '<span class="muted small">' + tr('mech.noSplit') + '</span>';
   }
 
@@ -2926,7 +3080,8 @@
   }
 
   /* ---------- render: what wins your matches ---------- */
-  function unitSuffix(unit) { return unit === '%' ? (I18N.getLang() === 'fr' ? ' %' : '%') : unit ? ' ' + unit : ''; }
+  function unitLabel(unit) { return speedUnitLabel(unit); }
+  function unitSuffix(unit) { return unit === '%' ? (I18N.getLang() === 'fr' ? ' %' : '%') : unit ? ' ' + unitLabel(unit) : ''; }
   function fmtStat(v, unit, digits) { return fmtNum(v, digits) + unitSuffix(unit); }
   function focusLabel(f) { return tr('focus.' + f); }
   function renderWinFactors(ms) {
@@ -2979,10 +3134,13 @@
 
   /* ---------- render: on the field ---------- */
   function renderField(ms) {
-    var t = computeTouches(ms);
-    $('#field-sub').textContent = t.matches ? tr('field.sub', { v: plural(t.matches, 'match') }) : tr('field.none');
-    $('#field-grid').hidden = !t.matches;
-    if (!t.matches) return;
+    var t = computeTouches(ms), gp = computeGoalPlacement(ms), d = computeDemos(ms);
+    var available = t.matches || gp.scored.n || gp.conceded.n || d.matches;
+    $('#field-sub').textContent = available ? tr('field.availability', {
+      touches: t.matches, goals: gp.scored.n + gp.conceded.n, demos: d.matches
+    }) : tr('field.none');
+    $('#field-grid').hidden = !available;
+    if (!available) return;
     drawTouchMap($('#touch-map'), t);
     var fact = function (label, v, tip) { return '<div class="sit-row"' + (tip ? ' title="' + esc(tip) + '"' : '') + '><span>' + label + '</span><b>' + v + '</b></div>'; };
     var third = function (label, v, cls) {
@@ -2992,21 +3150,19 @@
       third(tr('field.off'), t.offShare) + third(tr('field.mid'), t.midShare) + third(tr('field.def'), t.defShare, 'them') +
       fact(tr('field.offWinLoss'), fmtPct(t.offWin.share) + ' <small class="muted">/ ' + fmtPct(t.offLoss.share) + '</small>', tr('field.offWinLossTip')) +
       fact(tr('field.aerial'), fmtPct(t.aerialShare), tr('field.aerialTip')) +
-      fact(tr('field.powerful'), fmtPct(t.powerShare), tr('field.powerfulTip')) +
-      fact(tr('field.gain'), isNum(t.avgGain) ? fmtSigned(kmh(t.avgGain)) + ' km/h' : '—', tr('field.gainTip')) +
+      fact(tr('field.powerful'), '—', tr('field.powerfulTip')) +
+      fact(tr('field.gain'), isNum(t.avgGain) ? fmtSigned(t.avgGain, 1) + ' ' + speedUnitLabel(t.speedUnit) : '—', tr('field.gainTip')) +
       fact(tr('field.perMatch'), fmtNum(t.perMatch, 1));
 
-    var gp = computeGoalPlacement(ms);
     $('#goal-scored').innerHTML = goalSvg(gp.scored, true);
     $('#goal-conceded').innerHTML = goalSvg(gp.conceded, false);
     $('#goal-facts').innerHTML =
       fact(tr('field.highScored'), fmtPct(gp.scored.highShare)) + fact(tr('field.cornerScored'), fmtPct(gp.scored.cornerShare)) +
       fact(tr('field.highConceded'), fmtPct(gp.conceded.highShare)) + fact(tr('field.cornerConceded'), fmtPct(gp.conceded.cornerShare));
 
-    var d = computeDemos(ms);
     $('#demo-facts').innerHTML =
       fact(tr('field.demosMade'), fmtNum(d.madePer, 2)) + fact(tr('field.demosTaken'), fmtNum(d.takenPer, 2)) +
-      fact(tr('field.demosNet'), fmtSigned(num(d.madePer) - num(d.takenPer), 2)) +
+      fact(tr('field.demosNet'), fmtSigned(d.matches ? d.madePer - d.takenPer : null, 2)) +
       fact(tr('field.nemesis'), d.nemesis ? esc(d.nemesis.name) + ' <small class="muted">· ' + d.nemesis.n + '</small>' : '—', tr('field.nemesisTip')) +
       fact(tr('field.victim'), d.victim ? esc(d.victim.name) + ' <small class="muted">· ' + d.victim.n + '</small>' : '—') +
       meterRow(tr('field.demoedOften'), d.often, 'them') + meterRow(tr('field.demoedRarely'), d.rarely);
@@ -3206,6 +3362,7 @@
   }
 
   function goalTime(m, g) {
+    if (!isNum(g.t) || g.t < 0 || g.t > num(m.duration_s)) return '—';
     var t = num(g.t), reg = regulationS(m);
     return isOtGoal(m, g) ? '+' + fmtClock(Math.max(0, t - reg)) : fmtClock(t);
   }
@@ -3214,6 +3371,7 @@
   }
   /** Goal timeline: our goals above the axis, theirs below, overtime shaded. */
   function goalTimeline(m, goals) {
+    if (!goalsComplete(m)) return '';
     var reg = regulationS(m);
     var total = Math.max(reg, reg + num(m.overtime_s), goals.length ? num(goals[goals.length - 1].t) : 0);
     var tl = '<div class="timeline" aria-hidden="true"><div class="axis"></div>';
@@ -3226,15 +3384,15 @@
     return tl + '</div>';
   }
   function goalItems(m, goals) {
-    var us = 0, them = 0;
+    var us = 0, them = 0, complete = goalsComplete(m);
     var ko = goalsComplete(m) ? kickoffGoals(m).filter(function (k) { return k.kickoff; }).map(function (k) { return k.goal; }) : [];
     return goals.map(function (g) {
-      if (g.team === 'us') us++; else them++;
-      return '<li><span class="t">' + goalTime(m, g) + '</span><span class="d" style="background:' + (g.team === 'us' ? 'var(--us)' : 'var(--them)') + '"></span>' +
+      if (g.team === 'us') us++; else if (g.team === 'them') them++;
+      return '<li><span class="t">' + goalTime(m, g) + '</span><span class="d" style="background:var(--' + (g.team === 'us' ? 'us' : g.team === 'them' ? 'them' : 'neutral') + ')"></span>' +
         '<span class="who">' + esc(g.scorer || '?') + (g.me_scored ? ' <span class="chip">' + tr('common.you') + '</span>' : '') + (g.assister ? ' <small>· ' + tr('match.assist', { v: esc(g.assister) }) + '</small>' : '') +
-        (isNum(g.speed) && g.speed > 0 ? ' <small>· ' + fmtNum(goalKmh(g.speed)) + ' km/h</small>' : '') +
+        (isNum(g.speed) && g.speed > 0 ? ' <small>· ' + formatRawSpeed(g.speed, speedUnit(m)) + '</small>' : '') +
         (ko.indexOf(g) >= 0 ? ' <span class="chip" title="' + esc(tr('match.kickoffTip', { v: KICKOFF_GOAL_S })) + '">' + tr('match.kickoff') + '</span>' : '') + '</span>' +
-        '<span class="sc">' + us + '–' + them + '</span></li>';
+        (complete ? '<span class="sc">' + us + '–' + them + '</span>' : '') + '</li>';
     }).join('');
   }
   function matchDetail(m) {
@@ -3261,12 +3419,12 @@
     fact('tbl.arena', esc(prettyArena(m.arena)));
     if (m.overtime) fact('goals.overtime', fmtClock(m.overtime_s));
     if (m.movement) {
-      fact('match.avgSpeed', fmtNum(kmh(m.movement.avg_speed)) + ' km/h');
+      fact('match.avgSpeed', formatRawSpeed(m.movement.avg_speed, speedUnit(m)));
       fact('mech.supersonic_pct', fmtPct100(m.movement.supersonic_pct, 1));
       fact('mech.air_split', fmtPct100(m.movement.air_pct, 1));
       fact('match.avgBoost', fmtNum(m.movement.avg_boost));
     }
-    if (m.hits) facts.push('<span>' + tr('match.hits', { n: '<b>' + fmtNum(m.hits.count) + '</b>', avg: '<b>' + fmtNum(kmh(m.hits.avg_speed)) + '</b>', max: '<b>' + fmtNum(kmh(m.hits.max_speed)) + ' km/h</b>' }) + '</span>');
+    if (m.hits) facts.push('<span>' + tr('match.hits', { n: '<b>' + fmtNum(m.hits.count) + '</b>', avg: '<b>' + formatRawSpeed(m.hits.avg_speed, speedUnit(m)) + '</b>', max: '<b>' + formatRawSpeed(m.hits.max_speed, speedUnit(m)) + '</b>' }) + '</span>');
     var sf = m.statfeed || {};
     var feed = Object.keys(sf).filter(function (k) { return k !== 'Win'; }).map(function (k) { return '<span class="chip">' + esc(statfeedLabel(k)) + (sf[k] > 1 ? ' ×' + sf[k] : '') + '</span>'; }).join('');
 
@@ -3559,10 +3717,10 @@
     var you = ' <span class="chip you">' + tr('common.you') + '</span>';
     var list = goals.length ? '<ol class="goal-list mp-goal-list">' + goals.map(function (g) {
       var ours = g.team === 'us';
-      if (ours) us++; else them++;
-      var spd = isNum(g.speed) && g.speed > 0 ? fmtNum(goalKmh(g.speed)) + ' km/h' : '';
-      return '<li><span class="t num">' + goalTime(m, g) + '</span><span class="d" style="background:var(--' + (ours ? 'us' : 'them') + ')"></span>' +
-        '<span class="sr-only">' + tr(ours ? 'match.yourTeam' : 'match.opponents') + '</span>' +
+      if (ours) us++; else if (g.team === 'them') them++;
+      var spd = isNum(g.speed) && g.speed > 0 ? formatRawSpeed(g.speed, speedUnit(m)) : '';
+      return '<li><span class="t num">' + goalTime(m, g) + '</span><span class="d" style="background:var(--' + (ours ? 'us' : g.team === 'them' ? 'them' : 'neutral') + ')"></span>' +
+        '<span class="sr-only">' + tr(ours ? 'match.yourTeam' : g.team === 'them' ? 'match.opponents' : 'common.unknown') + '</span>' +
         '<span class="who"><b>' + esc(g.scorer || '?') + '</b>' + (g.me_scored ? you : '') +
         (g.assister ? ' <small>· ' + tr('match.assist', { v: esc(g.assister) }) + (g.me_assist ? you : '') + '</small>' : '') + '</span>' +
         '<span class="spd num">' + spd + '</span>' +
@@ -3574,7 +3732,7 @@
       goalTimeline(m, goals) + list + note + '</section>';
   }
 
-  function cmpUnit(s) { return s.unit === '%' ? (I18N.getLang() === 'fr' ? ' %' : '%') : s.unit ? ' ' + s.unit : ''; }
+  function cmpUnit(s) { return unitSuffix(s.unit); }
   /** One "this match vs average" row: value, average, signed delta (arrow + sign, colored when good/bad), bar + average tick. */
   function cmpRow(s, v, a, pre) {
     var ad = s.avgDigits != null ? s.avgDigits : s.digits;
@@ -3628,7 +3786,13 @@
     var mv = m.movement, h = m.hits;
     if (!mv && !h) return '';
     var bm = base ? base.movement : {}, bh = base ? base.hits : {};
-    function avgOf(o, k) { return o && o[k] && o[k].n >= 3 ? o[k].avg : null; }
+    function avgOf(o, k) {
+      var ref = o && o[k];
+      if (!ref || ref.n < 3 || ref.unit === null) return null;
+      if (['raw', 'legacy', 'uu/s', 'km/h'].indexOf(ref.unit) >= 0 && ref.unit !== speedUnit(m)) return null;
+      return ref.avg;
+    }
+    function forMatch(s) { return s.unit === 'raw' ? Object.assign({}, s, { unit: speedUnit(m) }) : s; }
     var nMv = bm && bm.avg_speed ? bm.avg_speed.n : 0, nH = bh && bh.avg_speed ? bh.avg_speed.n : 0;
     var nRef = Math.max(nMv, nH);
     var sub = nRef >= 3 ? tr('mp.mvSub', { v: nRef, mode: esc(modeLabel(m)) }) : tr('mp.mvNotEnough');
@@ -3644,10 +3808,10 @@
       } else if (!known) html += '<p class="mp-note">' + tr('mp.wallUnknown') + '</p>';
     }
     var rows = [];
-    if (mv) MOVE_STATS.forEach(function (s) { if (!s.split) rows.push(cmpRow(s, statValue(m, 'movement', s), avgOf(bm, s.key))); });
+    if (mv) MOVE_STATS.forEach(function (s) { if (!s.split) rows.push(cmpRow(forMatch(s), statValue(m, 'movement', s), avgOf(bm, s.key))); });
     if (h) {
       if (rows.length) rows.push('<tr class="sub"><th colspan="5" scope="rowgroup">' + tr('mp.ballHits') + '</th></tr>');
-      HIT_STATS.forEach(function (s) { rows.push(cmpRow(s, statValue(m, 'hits', s), avgOf(bh, s.key))); });
+      HIT_STATS.forEach(function (s) { rows.push(cmpRow(forMatch(s), statValue(m, 'hits', s), avgOf(bh, s.key))); });
     }
     return html + cmpTable(rows) + '</section>';
   }
@@ -3679,7 +3843,8 @@
     if (cp === undefined) { loadSharedCopies(m.id, key); cp = null; }
     var head = '<section class="card mp-card mp-shared" aria-labelledby="mp-h-shared"><div class="mp-head"><h2 id="mp-h-shared">' + tr('shared.title') + '</h2>' +
       '<span class="card-meta">' + tr('shared.sub') + '</span></div>';
-    if (cp === 'err') return head + '<p class="muted small">' + tr('shared.failed') + '</p></section>';
+    if (cp === 'err') return head + '<p class="muted small">' + tr('shared.failed') + '</p>' +
+      '<button type="button" class="btn" data-shared-retry="' + m.id + '">' + tr('shared.retry') + '</button></section>';
     if (!cp) return head + '<p class="muted small">' + tr('common.loading') + '</p></section>';
     var self = state.route.player ? (viewedPlayer() || {}).name : tr('common.you');
     var cols = [{ name: self, m: m, us: true }].concat(cp.map(function (c) {
@@ -3702,15 +3867,26 @@
     return head + '<div class="table-scroll"><table class="data-table shared-table"><thead><tr><th></th>' + th + '</tr></thead><tbody>' + rows + '</tbody></table></div></section>';
   }
   function loadSharedCopies(id, key) {
+    var gen = state.gen, copies = state.sharedCopies;
+    if (copies[key] !== undefined && copies[key] !== 'err') return Promise.resolve(false);
     state.sharedCopies[key] = null;
-    apiFetch(apiBase() + '/matches/' + id + '/shared').then(function (cp) {
+    return apiFetch(apiBase() + '/matches/' + id + '/shared').then(function (cp) {
+      if (gen !== state.gen || copies !== state.sharedCopies) return;
       state.sharedCopies[key] = Array.isArray(cp) ? cp : [];
     }).catch(function (e) {
+      if (gen !== state.gen || copies !== state.sharedCopies) return;
       console.warn('shared copies', e);
       state.sharedCopies[key] = 'err';
     }).then(function () {
-      if (state.route.view === 'match' && state.route.id === id) renderMatchPage();
+      if (gen === state.gen && copies === state.sharedCopies && state.route.view === 'match' && state.route.id === id) renderMatchPage();
     });
+  }
+  function retrySharedCopies(id) {
+    var key = apiBase() + '/' + id;
+    if (state.route.view !== 'match' || state.route.id !== id || state.sharedCopies[key] !== 'err') return Promise.resolve(false);
+    var request = loadSharedCopies(id, key);
+    renderMatchPage();
+    return request;
   }
   function renderMatchPage() {
     var box = $('#view-match');
@@ -3740,6 +3916,8 @@
       if (sel) updateTag(+sel.dataset.tagFor, sel.value, sel);
     });
     v.addEventListener('click', function (e) {
+      var retry = e.target.closest('[data-shared-retry]');
+      if (retry) return retrySharedCopies(+retry.dataset.sharedRetry);
       var d = e.target.closest('[data-mp-del]');
       if (d) deleteMatch(+d.getAttribute('data-mp-del'), function () { location.hash = '#/history'; });
     });
@@ -3812,6 +3990,11 @@
           '</p><p class="w-actions"><button type="button" class="btn" data-install-update' + (state.installing ? ' disabled' : '') + '>' +
           tr(state.installing ? 'st.updateInstalling' : 'st.updateInstall') + '</button>', true));
       }
+    }
+    // Local-only API field: never project a workstation's queue onto a hosted/player view.
+    if (s && !state.statusError && state.mode === 'local' && !state.dataFor && !readOnly()) {
+      var delivery = deliveryMessage(s.delivery);
+      if (delivery) w.push(warning(delivery.attention ? '!' : 'i', tr('st.deliveryTitle'), esc(delivery.text), !delivery.attention));
     }
     $('#warnings').innerHTML = w.join('');
     var ver = s && s.version ? 'Rocket Tracker v' + stripV(s.version) : 'Rocket Tracker';
@@ -3930,7 +4113,7 @@
     var m = liveAsMatch(Lv);
     var team = Lv.me ? tr(Lv.my_team === 1 ? 'st.teamOrange' : 'st.teamBlue') : '';
     $('#live-sub').textContent = [who, modeLabel(m), prettyArena(Lv.arena), team].filter(Boolean).join(' · ');
-    var base = baselineOf(state.all, Lv.mode, 'Soccar', 50, Lv.regulation_s === DUEL_REG_S);
+    var base = baselineOf(state.all, Lv.mode, 'Soccar', 50, Lv.regulation_s === DUEL_REG_S, Lv.overtime ? null : regulationS(m));
     var at = Date.parse(Lv.started_at);
     var sess = currentSession(state.all, isNum(at) ? at : Date.now(), Lv.mode);
     var mv = Lv.me ? mpMovement(m, base, 'lv') : '';
@@ -4017,9 +4200,10 @@
       if (sess.mode.n && sess.mode.n !== r.n) rows.push('<li><span>' + esc(mode) + '</span><b>' + wlShort(sess.mode.wins, sess.mode.losses) + '</b></li>');
       var st = sess.streak;
       if (st && st.len >= 2) {
-        var tilt = num((state.config || {}).tilt_streak) || 3;
+        var configuredTilt = (state.config || {}).tilt_streak;
+        var tilt = isNum(configuredTilt) ? configuredTilt : 3;
         rows.push('<li><span>' + tr('kpi.streak') + '</span><b class="' + (st.type === 'win' ? 'pos' : 'neg') + '">' + st.len + ' ' + tr(st.type === 'win' ? 'kpi.streakWins' : 'kpi.streakLosses', { n: st.len }) + '</b></li>');
-        if (st.type === 'loss' && st.len >= tilt) rows.push('<li class="lv-warn">' + tr('live.tiltWarn', { n: st.len }) + '</li>');
+        if (tilt > 0 && st.type === 'loss' && st.len >= tilt) rows.push('<li class="lv-warn">' + tr('live.tiltWarn', { n: st.len }) + '</li>');
       }
       // Fatigue: how I do from this match number on in my sessions, when clearly below my usual rate.
       var nx = playing ? sess.next : sess.n + 1;
@@ -4027,9 +4211,9 @@
         rows.push('<li class="lv-warn">' + tr('live.fatigue', { n: nx, v: fmtPct(sess.later.wr), all: fmtPct(sess.overall.wr) }) + '</li>');
       }
     }
-    var rk = rankSummary(profileRanks()).find(function (x) { return x.playlist === mode; });
+    var rk = rankSummary(ranksForProfile(state.ranks, rankDestination())).find(function (x) { return x.playlist === mode; });
     if (rk && (isNum(rk.tier) || isNum(rk.mmr))) {
-      rows.push('<li><span>' + tr('live.rank', { mode: esc(mode) }) + '</span><b>' + (isNum(rk.tier) ? rankIcon(rk.tier, 20) + esc(rankName(rk.tier)) : '') +
+      rows.push('<li><span>' + tr('live.rank', { mode: esc(mode) }) + ' · ' + esc(rankAccountLabel(rk.profile)) + '</span><b>' + (isNum(rk.tier) ? rankIcon(rk.tier, 20) + esc(rankName(rk.tier)) : '') +
         (isNum(rk.mmr) ? (isNum(rk.tier) ? ' · ' : '') + fmtNum(rk.mmr) + ' MMR' : '') + '</b></li>');
     }
     var g = computeGoal(state.all, state.config && state.config.goal, null, profileManual());
@@ -4046,11 +4230,11 @@
     var el = num(m.duration_s);
     var rows = PERF_STATS.map(function (s) {
       var now = statValue(m, 'me', s);
-      var v = m.overtime ? now : livePace(now, el, false);
+      var v = m.overtime ? now : livePace(now, el, false, regulationS(m));
       return cmpRow(Object.assign({}, s, { digits: m.overtime || s.key === 'score' ? 0 : 1, avgDigits: s.key === 'score' ? 0 : 1 }), v, base.me[s.key].avg, '<td class="v">' + fmtNum(now) + '</td>');
     });
-    return head + '<span class="card-meta">' + tr(el < 60 && !m.overtime ? 'live.paceSoon' : 'live.perfSub', { v: base.n, mode: esc(modeLabel(m)) }) + '</span></div>' +
-      cmpTable(rows, { pre: tr('live.now'), v: tr(m.overtime ? 'mp.thisMatch' : 'live.pace'), vLc: tr(m.overtime ? 'mp.thisMatchLc' : 'live.paceLc') }) + '</section>';
+    return head + '<span class="card-meta">' + tr(m.overtime ? 'live.perfRawSub' : el < 60 ? 'live.paceSoon' : 'live.perfSub', { v: base.n, mode: esc(modeLabel(m)), minutes: fmtNum(regulationS(m) / 60, 1) }) + '</span></div>' +
+      cmpTable(rows, { pre: tr('live.now'), v: m.overtime ? tr('mp.thisMatch') : tr('live.pace', { minutes: fmtNum(regulationS(m) / 60) }), vLc: tr(m.overtime ? 'mp.thisMatchLc' : 'live.paceLc') }) + '</section>';
   }
   /** No match going on: the last match of the session and the session, waiting for the next one. */
   function liveIdle() {
@@ -4190,24 +4374,50 @@
   // Each loader drops its answer when the viewed player changed meanwhile (state.gen).
   /** Server mode: which of the viewed player's matches other accounts recorded too (id -> with[]). */
   function loadShared() {
-    var gen = state.gen;
+    var gen = state.gen, mark = state.status && state.status.shared_rev;
     if (!isServer() || MOCK) { state.shared = {}; return Promise.resolve(); }
+    if (state.sharedBusy) return Promise.resolve(false);
+    state.sharedBusy++;
     return apiFetch(apiBase() + '/shared').then(function (list) {
-      if (gen !== state.gen) return;
+      if (gen !== state.gen) return false;
       var map = {};
       (list || []).forEach(function (s) { map[s.id] = s.with || []; });
+      state.sharedBusy--;
       state.shared = map;
+      state.sharedCopies = {};
+      state.lastShared = mark == null ? null : mark;
+      state.sharedFailed = false;
       renderAll();
-    }).catch(function (e) { console.warn('shared', e); });
+      return true;
+    }).catch(function (e) {
+      if (gen !== state.gen) return false;
+      state.sharedBusy--;
+      state.sharedFailed = true;
+      state.lastShared = null;
+      console.warn('shared', e);
+      return false;
+    });
   }
   function loadRanks() {
-    var gen = state.gen;
+    var gen = state.gen, mark = dataMarker(state.status, 'match_count');
     if (MOCK) { state.ranks = mockRanks(); return Promise.resolve(); }
+    state.ranksBusy++;
     return apiFetch(apiBase() + '/ranks').then(function (rs) {
-      if (gen !== state.gen) return;
+      if (gen !== state.gen) return false;
+      state.ranksBusy--;
       state.ranks = annotateRanks(Array.isArray(rs) ? rs : []);
+      state.lastRanks = mark;
+      state.ranksFailed = false;
       renderRanks();
-    }).catch(function (e) { console.warn('ranks', e); });
+      return true;
+    }).catch(function (e) {
+      if (gen !== state.gen) return false;
+      state.ranksBusy--;
+      state.lastRanks = null;
+      state.ranksFailed = true;
+      console.warn('ranks', e);
+      return false;
+    });
   }
   /**
    * Loads the matches; resolves to true on success. state.lastCount is what was loaded (the
@@ -4216,8 +4426,8 @@
    */
   function loadMatches() {
     var gen = state.gen, mark = dataMarker(state.status, 'match_count');
-    loadShared();
-    loadRanks();
+    if (!state.sharedBusy) loadShared();
+    if (!state.ranksBusy) loadRanks();
     state.matchesBusy++;
     return apiFetch(apiBase() + '/matches').then(function (data) {
       if (gen !== state.gen) return false;
@@ -4253,8 +4463,16 @@
       autoOpenLive();
       // New data (data_rev, else the counts), or the last load failed: reload, unless a load is
       // already running (the first one included: state.loaded is set when it ends).
-      if (state.loaded && !state.matchesBusy && needsReload(dataMarker(s, 'match_count'), state.lastCount)) loadMatches();
-      if (!state.trainingsBusy && needsReload(dataMarker(s, 'training_count'), state.lastTrainings)) loadTrainings();
+      var pending = [], mark = dataMarker(s, 'match_count');
+      if (state.loaded && isServer() && !state.sharedBusy && (state.sharedFailed ||
+          !s || s.shared_rev == null || needsReload(s.shared_rev, state.lastShared))) pending.push(loadShared());
+      if (state.loaded && !state.matchesBusy && needsReload(mark, state.lastCount)) pending.push(loadMatches());
+      // Auxiliary reads have independent success markers: successful matches do not acknowledge
+      // failed ranks or manual entries, and data_rev also covers edits that keep counts unchanged.
+      if (state.loaded && !state.ranksBusy && (state.ranksFailed || needsReload(mark, state.lastRanks))) pending.push(loadRanks());
+      if (state.loaded && !state.manualBusy && (state.manualFailed || needsReload(mark, state.lastManual))) pending.push(loadManual());
+      if (!state.trainingsBusy && needsReload(dataMarker(s, 'training_count'), state.lastTrainings)) pending.push(loadTrainings());
+      return Promise.all(pending);
     }).catch(function () {
       if (gen !== state.gen) return;
       state.statusError = true;
@@ -4302,12 +4520,16 @@
   function loadAll() {
     state.dataFor = state.route.player || '';
     state.gen++;
-    Object.assign(state, { all: [], allRaw: [], profiles: [], filtered: [], manual: [], trainings: [], lastTrainings: null, trainingsBusy: 0, planDraft: null, config: null, status: null,
+    var gen = state.gen;
+    Object.assign(state, { all: [], allRaw: [], profiles: [], filtered: [], manual: [], lastManual: null, manualBusy: 0, manualFailed: false,
+      ranks: [], lastRanks: null, ranksBusy: 0, ranksFailed: false, shared: {}, lastShared: null, sharedBusy: 0, sharedFailed: false, sharedCopies: {}, trainings: [], lastTrainings: null, trainingsBusy: 0, planDraft: null, config: null, status: null,
       lastCount: null, matchesBusy: 0, matchesFailed: false, loaded: false, open: {}, shown: PAGE_SIZE, histShown: HIST_PAGE });
     renderStatus();
     loadTrainings();
     // lastCount / lastTrainings are set by the loads themselves, on success only.
-    return Promise.all([pollStatus(), Promise.all([loadConfig(), loadManual()]).then(loadMatches)]);
+    return Promise.all([pollStatus(), Promise.all([loadConfig(), loadManual()]).then(function () {
+      if (gen === state.gen) return loadMatches();
+    })]);
   }
 
   /* ---------- table interactions ---------- */
@@ -4518,11 +4740,23 @@
     var tm = state.timer;
     if (readOnly()) { box.innerHTML = '<h3>' + tr('trn.planTitle') + '</h3><p class="muted small">' + tr('trn.planOther') + '</p>'; return; }
     if (tm) {
+      if (tm.ended) {
+        var disabled = state.timerSaving ? ' disabled' : '';
+        box.innerHTML = '<h3>' + tr('trn.doneTitle') + '</h3><p class="muted small">' + tr(tm.issue || (tm.saveRejected ? 'trn.rejectedSave' : 'trn.pendingSave')) + '</p>' +
+          '<p class="muted small">' + tr('trn.keptActivity', { v: trainingSeconds(tm.payload || timerBody(tm, tm.ended)) }) + '</p>' +
+          '<div class="btn-row"><button type="button" class="btn" data-timer="stop"' + disabled + '>' + tr('trn.retrySave') + '</button>' +
+          '<button type="button" class="btn btn-ghost" data-timer="export">' + tr('trn.exportTimer') + '</button>' +
+          '<button type="button" class="btn btn-ghost" data-timer="discard"' + disabled + '>' + tr('trn.discardTimer') + '</button></div>' +
+          '<p class="muted small">' + tr('trn.timerPrecision') + '</p>';
+        return;
+      }
       var b = tm.blocks[tm.idx], next = tm.blocks[tm.idx + 1];
       box.innerHTML = '<h3>' + tr('trn.running') + '</h3>' +
+        (tm.legacyActivityExcluded ? '<p class="muted small">' + tr('trn.legacyActivity') + '</p>' : '') +
         '<div class="timer-now"><div class="timer-clock" id="timer-clock">--:--</div><div><div class="timer-focus">' + esc(focusLabel(b.focus)) + '</div>' +
         '<div class="muted small">' + tr('trn.blockOf', { i: tm.idx + 1, n: tm.blocks.length }) + (next ? ' · ' + tr('trn.next', { v: esc(focusLabel(next.focus)) }) : '') + '</div></div></div>' +
         '<div class="meter timer-meter"><span id="timer-bar"></span></div>' +
+        '<p class="muted small">' + tr('trn.timerBounds') + '</p>' +
         '<div class="drill">' + tr('drill.' + b.focus) + '</div>' +
         '<ol class="plan-steps">' + tm.blocks.map(function (x, i) {
           return '<li class="' + (i < tm.idx ? 'done' : i === tm.idx ? 'cur' : '') + '"><span>' + esc(focusLabel(x.focus)) + '</span><span>' + x.minutes + ' min</span></li>';
@@ -4545,21 +4779,85 @@
       (custom ? '<button type="button" class="btn btn-ghost" data-plan="save">' + tr('trn.savePlan') + '</button><button type="button" class="btn btn-ghost" data-plan="auto">' + tr('trn.autoPlan') + '</button>' :
         '<label class="plan-len">' + tr('trn.autoLen') + ' <select class="select" data-plan-len>' + numOptions(WARMUP_MINUTES, w.minutes, function (v) { return v + ' min'; }) + '</select></label>') + '</div>' +
       '<button type="button" class="btn btn-primary timer-start" data-timer="start">' + tr('trn.start') + '</button>' +
-      '<div class="sit-foot">' + tr('trn.planFoot') + '</div>';
+      '<div class="sit-foot">' + tr('trn.planFoot') + ' ' + tr('trn.timerPrecision') + ' ' + tr('trn.timerBounds') + '</div>';
   }
 
   /* timer: blocks run one after the other; a chime and a notification at each change */
-  function loadTimer() { try { var t = JSON.parse(localStorage.getItem('rt.timer') || 'null'); return t && Array.isArray(t.blocks) && t.blocks.length ? t : null; } catch (e) { return null; } }
+  function measuredTimer(tm, now) {
+    if (!Array.isArray(tm.activeIntervals)) {
+      // Legacy countdowns cannot locate prior pauses. Keep calendar bounds but measure only from now.
+      tm.activeIntervals = []; tm.activeSince = tm.paused || tm.ended ? null : now;
+      tm.legacyActivityExcluded = true;
+    }
+    return tm;
+  }
+  function loadTimer() {
+    try {
+      var t = JSON.parse(localStorage.getItem('rt.timer') || 'null');
+      if (!t || !Array.isArray(t.blocks) || !t.blocks.length || !isNum(t.started) ||
+          !Number.isInteger(t.idx) || t.idx < 0 || t.idx >= t.blocks.length) return null;
+      return measuredTimer(t, Date.now());
+    } catch (e) { return null; }
+  }
+  function closeTimerInterval(tm, now) {
+    measuredTimer(tm, now);
+    if (isNum(tm.activeSince) && now > tm.activeSince) tm.activeIntervals.push({
+      started_at: new Date(tm.activeSince).toISOString(), ended_at: new Date(now).toISOString()
+    });
+    tm.activeSince = null;
+  }
+  function timerBody(tm, end) {
+    var intervals = tm.activeIntervals.slice();
+    if (!tm.ended && isNum(tm.activeSince) && end > tm.activeSince) intervals.push({
+      started_at: new Date(tm.activeSince).toISOString(), ended_at: new Date(end).toISOString()
+    });
+    var main = tm.blocks.find(function (b) { return b.focus !== 'freeplay'; }) || tm.blocks[0];
+    var raw = { started_at: new Date(tm.started).toISOString(), ended_at: new Date(end).toISOString(), active_intervals: intervals, focus: main.focus };
+    // Invalid legacy/persisted content is retained for export, never silently repaired by dropping activity.
+    return canonicalTraining(raw) || raw;
+  }
+  function freezeTimer(tm, now) {
+    if (!tm.ended) { closeTimerInterval(tm, now); tm.ended = now; tm.paused = now; }
+    if (!tm.payload) tm.payload = timerBody(tm, tm.ended);
+  }
+  function guardTimer(tm, now, openingInterval) {
+    var body = timerBody(tm, now), issue = trainingLimit(body);
+    if (now - tm.started >= TRAINING_MAX_MS) issue = 'trn.limitTime';
+    if (openingInterval && body.active_intervals.length >= TRAINING_MAX_INTERVALS) issue = 'trn.limitIntervals';
+    if (!issue) return false;
+    freezeTimer(tm, now); tm.issue = issue;
+    saveTimer(); renderTimerPill();
+    toast(tr(issue), true);
+    if (state.route.view === 'training') renderTimerCard();
+    return true;
+  }
+  function exportTimer() {
+    var tm = state.timer;
+    if (!tm || !tm.ended) return false;
+    freezeTimer(tm, tm.ended);
+    var blob = new Blob([JSON.stringify(tm.payload, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = 'rocket-tracker-training-' + new Date(tm.started).toISOString().slice(0, 10) + '.json';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+    return true;
+  }
+  function discardTimer() {
+    if (!state.timer || state.timerSaving || !window.confirm(tr('trn.confirmDiscardTimer'))) return false;
+    state.timer = null; saveTimer(); renderTimerPill(); renderTimerCard();
+    return true;
+  }
   function saveTimer() { try { if (state.timer) localStorage.setItem('rt.timer', JSON.stringify(state.timer)); else localStorage.removeItem('rt.timer'); } catch (e) { /* ignore */ } }
   function blockLeft(tm, now) {
     var b = tm.blocks[tm.idx];
     return b.minutes * 60000 - ((tm.paused || now) - tm.blockStart - tm.pausedMs);
   }
   function startTimer() {
+    if (state.timer || state.timerSaving) return;
     var plan = currentPlan().filter(function (b) { return b.minutes > 0; });
     if (!plan.length) return;
     var now = Date.now();
-    state.timer = { blocks: plan, started: now, idx: 0, blockStart: now, paused: null, pausedMs: 0 };
+    state.timer = { blocks: plan, started: now, idx: 0, blockStart: now, paused: null, pausedMs: 0, activeIntervals: [], activeSince: now };
     saveTimer();
     if (window.Notification && Notification.permission === 'default') { try { Notification.requestPermission(); } catch (e) { /* ignore */ } }
     chime();
@@ -4567,36 +4865,65 @@
   }
   function nextBlock(now) {
     var tm = state.timer;
+    if (!tm || tm.ended) return;
+    measuredTimer(tm, now);
+    if (guardTimer(tm, now, true)) return;
+    if (tm.idx + 1 >= tm.blocks.length) return finishTimer();
+    closeTimerInterval(tm, now); tm.activeSince = now;
     tm.idx++; tm.blockStart = now; tm.pausedMs = 0; tm.paused = null;
-    if (tm.idx >= tm.blocks.length) { finishTimer(); return; }
     var b = tm.blocks[tm.idx];
     chime();
     notify(tr('trn.nowTitle', { v: focusLabel(b.focus) }), tr('trn.nowText', { v: b.minutes }));
     saveTimer();
     if (state.route.view === 'training') renderTimerCard();
   }
-  /** Ends the warm-up and records it (at least one minute). */
+  /** Freeze the canonical payload before deciding thresholds; failed saves keep that exact payload. */
   function finishTimer() {
-    var tm = state.timer, now = Date.now();
-    state.timer = null;
-    saveTimer();
-    renderTimerPill();
+    var tm = state.timer, now = Date.now(), gen = state.gen;
+    if (!tm || state.timerSaving) return Promise.resolve(false);
+    measuredTimer(tm, now); freezeTimer(tm, now);
+    var body = tm.payload;
+    tm.issue = trainingLimit(body) || (trainingSeconds(body) < 60 ? 'trn.tooShort' : '');
+    if (tm.issue) {
+      saveTimer(); renderTimerPill(); toast(tr(tm.issue), true);
+      if (state.route.view === 'training') renderTimerCard();
+      return Promise.resolve(false);
+    }
+    state.timerSaving = true;
+    saveTimer(); renderTimerPill();
     if (state.route.view === 'training') renderTimerCard();
-    if (!tm || now - tm.started < 60000) return;
-    chime();
-    notify(tr('trn.doneTitle'), tr('trn.doneText'));
-    var main = tm.blocks.find(function (b) { return b.focus !== 'freeplay'; }) || tm.blocks[0];
-    var body = { started_at: new Date(tm.started).toISOString(), ended_at: new Date(now).toISOString(), focus: main.focus };
-    apiFetch('/api/trainings', { method: 'POST', body: JSON.stringify(body) }).then(function () {
+    return apiFetch('/api/trainings', { method: 'POST', body: JSON.stringify(body) }).then(function () {
+      if (state.timer === tm) state.timer = null;
+      saveTimer(); chime(); notify(tr('trn.doneTitle'), tr('trn.doneText'));
       toast(tr('trn.saved'));
-      loadTrainings();
-    }).catch(function (e) { toast(tr('toast.saveFailed', { v: e.message }), true); });
+      if (gen === state.gen) loadTrainings();
+      return true;
+    }).catch(function (e) {
+      tm.saveRejected = e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
+      saveTimer(); toast(tr('toast.saveFailed', { v: e.message }), true);
+      return false;
+    }).then(function (saved) {
+      state.timerSaving = false; renderTimerPill();
+      if (state.route.view === 'training') renderTimerCard();
+      return saved;
+    });
+  }
+  function pauseTimer(now) {
+    var tm = state.timer;
+    if (!tm || tm.ended) return;
+    measuredTimer(tm, now);
+    if (guardTimer(tm, now, !!tm.paused)) return;
+    if (tm.paused) { tm.pausedMs += now - tm.paused; tm.paused = null; tm.activeSince = now; }
+    else { closeTimerInterval(tm, now); tm.paused = now; }
+    saveTimer(); renderTimerCard();
   }
   function tickTimer() {
     var tm = state.timer;
     renderTimerPill();
-    if (!tm) return;
-    var now = Date.now(), left = blockLeft(tm, now);
+    if (!tm || tm.ended) return;
+    var now = Date.now();
+    if (guardTimer(tm, now, false)) return;
+    var left = blockLeft(tm, now);
     if (left <= 0 && !tm.paused) { nextBlock(now); return; }
     var clock = $('#timer-clock'), bar = $('#timer-bar');
     if (clock) clock.textContent = fmtClock(Math.ceil(Math.max(0, left) / 1000));
@@ -4606,6 +4933,7 @@
     var pill = $('#timer-pill'), tm = state.timer;
     pill.hidden = !tm || state.route.view === 'training';
     if (!tm || pill.hidden) return;
+    if (tm.ended) { pill.textContent = tr('trn.retrySave'); return; }
     pill.textContent = tr('trn.pill', { v: focusLabel(tm.blocks[tm.idx].focus), t: fmtClock(Math.ceil(Math.max(0, blockLeft(tm, Date.now())) / 1000)) });
   }
   var audioCtx = null;
@@ -4654,13 +4982,7 @@
         '<span class="n">' + tr('trn.firstThree', { v: plural(s.first.n, 'match') }) + ' · ' + plural(s.sessions, 'session') + '<br>' +
         tr('trn.wholeSession', { v: fmtPct(s.all.wr) }) + (isNum(s.touches) ? ' · ' + tr('trn.touches', { v: fmtNum(s.touches, 1) }) : '') + '</span></div>';
     };
-    var verdict;
-    if (!e.warm.sessions) verdict = tr('trn.effectNone');
-    else if (!e.enough) verdict = tr('trn.effectMore', { v: WARM_MIN_SESSIONS });
-    else {
-      var d = e.delta * 100;
-      verdict = d >= 5 ? tr('trn.effectGood', { v: fmtNum(d) }) : d <= -5 ? tr('trn.effectBad', { v: fmtNum(-d) }) : tr('trn.effectFlat');
-    }
+    var verdict = warmupEffectMessage(e);
     $('#train-effect').innerHTML = '<div class="tilt-pair">' + box(tr('trn.withWarmup'), e.warm) + box(tr('trn.withoutWarmup'), e.cold) + '</div>' +
       '<div class="tilt-verdict">' + verdict + '</div>' +
       '<div class="sit-foot">' + tr('trn.effectFoot', { m: WARM_MIN_S / 60, h: WARM_GAP_MS / 3600000 }) + '</div>';
@@ -4700,11 +5022,11 @@
       var plan = currentPlan().map(function (x) { return Object.assign({}, x); });
       if (b.dataset.timer === 'start') startTimer();
       else if (b.dataset.timer === 'pause' && state.timer) {
-        var tm = state.timer, now = Date.now();
-        if (tm.paused) { tm.pausedMs += now - tm.paused; tm.paused = null; } else tm.paused = now;
-        saveTimer(); renderTimerCard();
+        pauseTimer(Date.now());
       } else if (b.dataset.timer === 'skip' && state.timer) nextBlock(Date.now());
       else if (b.dataset.timer === 'stop') finishTimer();
+      else if (b.dataset.timer === 'export') exportTimer();
+      else if (b.dataset.timer === 'discard') discardTimer();
       else if (b.dataset.plan === 'add') { plan.push({ focus: 'shooting', minutes: 3 }); state.planDraft = plan; renderTimerCard(); }
       else if (b.dataset.plan === 'save') savePlan(plan);
       else if (b.dataset.plan === 'auto') { state.planDraft = null; savePlan([]); }
@@ -4732,6 +5054,7 @@
     });
     $('#timer-pill').addEventListener('click', function () { location.hash = href('training'); });
     state.timer = loadTimer();
+    saveTimer();
     setInterval(tickTimer, 500);
   }
 
@@ -4739,9 +5062,24 @@
   var MANUAL_MODES = ['1v1', '2v2', '3v3', '4v4'];
   var dayDialogKey = null;
   function loadManual() {
-    var gen = state.gen;
-    return apiFetch(apiBase() + '/manual').then(function (d) { if (gen === state.gen) state.manual = Array.isArray(d) ? d : []; })
-      .catch(function (e) { console.warn('manual', e); });
+    var gen = state.gen, mark = dataMarker(state.status, 'match_count');
+    state.manualBusy++;
+    return apiFetch(apiBase() + '/manual').then(function (d) {
+      if (gen !== state.gen) return false;
+      state.manualBusy--;
+      state.manual = Array.isArray(d) ? d : [];
+      state.lastManual = mark;
+      state.manualFailed = false;
+      if (state.loaded) renderAll();
+      return true;
+    }).catch(function (e) {
+      if (gen !== state.gen) return false;
+      state.manualBusy--;
+      state.lastManual = null;
+      state.manualFailed = true;
+      console.warn('manual', e);
+      return false;
+    });
   }
   function manualFor(day, mode) {
     return state.manual.find(function (e) { return e.day === day && e.mode === mode; }) || { games: 0, wins: 0 };

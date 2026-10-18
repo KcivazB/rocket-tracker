@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata" // TZ works without zoneinfo in the image (weekly Discord recap)
@@ -153,7 +154,15 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() {
+	var workers sync.WaitGroup
+	defer func() {
+		stop()
+		if hub.Discord != nil {
+			hub.Discord.Close()
+		}
+		workers.Wait()
+	}()
+	workers.Go(func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
 		for {
@@ -166,7 +175,7 @@ func run(args []string) error {
 			case <-t.C:
 			}
 		}
-	}()
+	})
 
 	// The container's root filesystem may be read-only: uploads go to the data volume.
 	tmpDir := filepath.Join(*dataDir, "tmp")
@@ -177,7 +186,8 @@ func run(args []string) error {
 	lang, _ := i18n.FromEnv()
 	hub.Discord = &server.Discord{PublicURL: pub, Lang: lang,
 		StateFile: filepath.Join(*dataDir, "discord.json"), Log: log.With("component", "discord")}
-	go hub.Discord.Run(ctx, st)
+	hub.Discord.Bind(ctx)
+	workers.Go(func() { hub.Discord.Run(ctx, st) })
 
 	srv := &server.Server{Version: buildinfo.Version, Store: st, Static: web.FS, Log: log.With("component", "http"), Hub: hub, TempDir: tmpDir}
 	log.Info("rocket tracker server started", "version", buildinfo.Version, "listen", *listen, "public_url", pub,

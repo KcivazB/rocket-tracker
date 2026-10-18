@@ -28,3 +28,13 @@ L’injection d’une chaîne ne prouve pas qu’un binaire correspond à une re
 Construire et exécuter le serveur sans injection (`dev`) et avec injection (`1.2.3`). Construire le desktop Windows avec les deux modes ; exécuter les tests Windows séparément sur une machine adaptée. Vérifier l’absence de requête updater pour `dev`, ainsi que toutes les références de linker dans les scripts et exemples. Aucun tag, release ou déploiement n’est créé pour vérifier ce contrat.
 
 Les PR précisent les preuves exécutées et les environnements non qualifiés. Revoir si un consommateur externe exige une transition de chemin linker ou un format de version différent. Le statut proposé reste distinct d’une intégration ou release.
+
+## Mise en œuvre proposée et adoption
+
+Le code de cette proposition et les contrats actuels sont décrits dans
+[ARCHITECTURE.md](../ARCHITECTURE.md), [SPEC.md](../SPEC.md),
+[OPERATIONS.md](../OPERATIONS.md) et [RELEASING.md](../RELEASING.md).
+Les preuves finales sont liées dans le suivi d’implémentation et la PR.
+L’autorisation d’implémenter ne vaut pas acceptation des mainteneurs, intégration
+ou release. Pour ADR-0005, la séparation technique est appliquée ; politique de
+partage et intégration plateforme restent des décisions produit distinctes.

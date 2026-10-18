@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"rocket-tracker/internal/domain"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -146,6 +148,29 @@ var migrations = []string{
 	// matches. Filled for existing rows by the "profile-column" repair.
 	`ALTER TABLE matches ADD COLUMN profile TEXT NOT NULL DEFAULT '';
 	CREATE INDEX IF NOT EXISTS idx_matches_user_guid_profile ON matches(user_id, guid, profile);`,
+	// v8: recording and delivery intent share a transaction. Unknown identities
+	// remain held and are never silently rebound to the current credentials.
+	`CREATE TABLE delivery_intents (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+ kind TEXT NOT NULL, record_id INTEGER NOT NULL, destination TEXT NOT NULL,
+ delivery_key TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+ payload TEXT NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+ UNIQUE(user_id,kind,record_id,destination));
+ CREATE INDEX delivery_pending ON delivery_intents(user_id,destination,state,id);
+ CREATE TABLE legacy_deliveries (source TEXT PRIMARY KEY, data BLOB NOT NULL,
+ state TEXT NOT NULL DEFAULT 'held', reason TEXT NOT NULL);`,
+	// v9: immutable origin survives acknowledgement of the transient intent.
+	`CREATE TABLE record_origins (
+ user_id INTEGER NOT NULL, kind TEXT NOT NULL, record_id INTEGER NOT NULL,
+ destination TEXT NOT NULL, PRIMARY KEY(user_id,kind,record_id));
+ INSERT INTO record_origins(user_id,kind,record_id,destination)
+ SELECT user_id,kind,record_id,CASE WHEN COUNT(DISTINCT destination)=1 THEN MIN(destination) ELSE '' END
+ FROM delivery_intents GROUP BY user_id,kind,record_id;`,
+	// v10: retain every merged sender key for replay after a bounded split.
+	`CREATE TABLE IF NOT EXISTS training_sources (
+ user_id INTEGER NOT NULL, src_key TEXT NOT NULL, record_id INTEGER NOT NULL,
+ PRIMARY KEY(user_id,src_key,record_id));
+ INSERT OR IGNORE INTO training_sources SELECT user_id,src_key,id FROM trainings WHERE src_key!='';`,
 }
 
 // Open opens (and creates / migrates) the database at path.
@@ -156,7 +181,7 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	dsn := "file:" + escapeURIPath(filepath.ToSlash(path)) + "?" + url.Values{
-		"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(NORMAL)", "foreign_keys(1)"},
+		"_pragma": {"busy_timeout(5000)", "journal_mode(WAL)", "synchronous(FULL)", "foreign_keys(1)"},
 	}.Encode()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -185,6 +210,9 @@ func (s *Store) migrate() error {
 	var v int
 	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
 		return err
+	}
+	if v < 0 || v > len(migrations) {
+		return fmt.Errorf("unsupported schema version %d (supported 0..%d)", v, len(migrations))
 	}
 	for i := v; i < len(migrations); i++ {
 		tx, err := s.db.Begin()
@@ -284,6 +312,10 @@ func (sc *Scope) Ingest(ctx context.Context, m *Match, srcKey string) error {
 }
 
 func (sc *Scope) save(ctx context.Context, m *Match, srcKey string) error {
+	return sc.saveWithDelivery(ctx, m, srcKey, nil, false)
+}
+
+func (sc *Scope) saveWithDelivery(ctx context.Context, m *Match, srcKey string, destination *domain.Destination, local bool) error {
 	repairHonorDuel(m) // still sent that way by agents before v0.22
 	m.Normalize()
 	// Lookup and write in one transaction: the same match uploaded twice at
@@ -298,6 +330,10 @@ func (sc *Scope) save(ctx context.Context, m *Match, srcKey string) error {
 		tag, startedAt, result string
 	)
 	where, args := findSame(m, srcKey)
+	origin := recordingOrigin(destination, local)
+	where = "COALESCE((SELECT o.destination FROM record_origins o WHERE o.user_id=matches.user_id AND o.kind='match' AND o.record_id=matches.id),'')=? AND " + where
+	args = append([]any{origin}, args...)
+
 	err = tx.QueryRowContext(ctx, `SELECT id, tag, started_at, result FROM matches WHERE user_id = ? AND `+where,
 		append([]any{sc.uid}, args...)...).Scan(&id, &tag, &startedAt, &result)
 	switch {
@@ -325,6 +361,14 @@ func (sc *Scope) save(ctx context.Context, m *Match, srcKey string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if err := sc.persistOrigin(ctx, tx, "match", m.ID, origin); err != nil {
+		return err
+	}
+	if destination != nil {
+		if err := sc.queueDelivery(ctx, tx, "match", m.ID, m, destination); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -355,8 +399,15 @@ func findSame(m *Match, srcKey string) (string, []any) {
 	}
 	order, oargs := `profile = ? DESC, id DESC`, []any{profile}
 	if (!m.Online || m.GUID == "") && srcKey != "" {
-		same = `(` + same + `) OR src_key = ?`
+		same = `(` + same + `) OR (src_key = ?`
+		if profile != "" {
+			same += ` AND profile IN (?, '')`
+		}
+		same += `)`
 		args = append(args, srcKey)
+		if profile != "" {
+			args = append(args, profile)
+		}
 		order, oargs = `src_key = ? DESC, `+order, append([]any{srcKey}, oargs...)
 	}
 	return `(` + same + `) ORDER BY ` + order + ` LIMIT 1`, append(args, oargs...)

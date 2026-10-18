@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"rocket-tracker/internal/application"
 	"rocket-tracker/internal/config"
 	"rocket-tracker/internal/setup"
 	"rocket-tracker/internal/store"
@@ -47,14 +48,44 @@ func (h *Hub) ttl() time.Duration {
 }
 
 func (h *Hub) secureCookies() bool {
-	return strings.HasPrefix(strings.ToLower(h.PublicURL), "https://")
+	// Plain cookies are only compatible with explicitly configured loopback HTTP.
+	u, err := url.Parse(h.PublicURL)
+	if err == nil && u.Scheme == "http" {
+		host := u.Hostname()
+		ip := net.ParseIP(host)
+		if strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Hub) cookieName(base string) string {
+	if h.secureCookies() {
+		return "__Host-" + base
+	}
+	return base
+}
+
+// securityCookie keeps issue, renewal and deletion in the same host namespace.
+func (h *Hub) securityCookie(base, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{Name: h.cookieName(base), Value: value, Path: "/", MaxAge: maxAge,
+		HttpOnly: true, Secure: h.secureCookies(), SameSite: http.SameSiteLaxMode}
+}
+
+// securityCookieValue refuses ambiguous duplicate names, including cookie tossing.
+func (h *Hub) securityCookieValue(r *http.Request, base string) (string, error) {
+	cs := r.CookiesNamed(h.cookieName(base))
+	if len(cs) != 1 || cs[0].Value == "" {
+		return "", errors.New("missing or ambiguous security cookie")
+	}
+	return cs[0].Value, nil
 }
 
 // setSessionCookie gives the browser the session token for the session's
 // lifetime (at sign-in, and again each time the expiry slides).
 func (h *Hub) setSessionCookie(w http.ResponseWriter, tok string) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: tok, Path: "/", MaxAge: int(h.ttl().Seconds()),
-		HttpOnly: true, Secure: h.secureCookies(), SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, h.securityCookie(sessionCookie, tok, int(h.ttl().Seconds())))
 }
 
 // origin is the scheme://host[:port] browsers send in the Origin header.
@@ -110,14 +141,14 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) *http.Requ
 		return r.WithContext(context.WithValue(ctx, deviceKey, d))
 	}
 	var u *store.User
-	if c, err := r.Cookie(sessionCookie); err == nil {
+	if tok, err := s.Hub.securityCookieValue(r, sessionCookie); err == nil {
 		var slid bool
-		u, slid, err = s.Store.RefreshSession(ctx, c.Value, s.Hub.ttl())
+		u, slid, err = s.Store.RefreshSession(ctx, tok, s.Hub.ttl())
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			s.Log.Error("session lookup", "err", err)
 		}
 		if u != nil && slid {
-			s.Hub.setSessionCookie(w, c.Value)
+			s.Hub.setSessionCookie(w, tok)
 		}
 	}
 	if u == nil {
@@ -331,6 +362,7 @@ func (s *Server) hubStatus(w http.ResponseWriter, r *http.Request) {
 		st.TrainingCount = n
 	}
 	st.DataRev = sc.DataRev()
+	st.SharedRev = sc.SharedRev()
 	if own {
 		if c, err := s.userSettings(ctx, sc.UserID()); err == nil {
 			st.Identity = identityJSON{Names: c.PlayerNames, IDs: c.PlayerIDs}
@@ -388,16 +420,25 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	rep.AutoIdentity = nil
 	s.Hub.agents.put(u.ID, d.ID, d.Name, rep)
+	installation, err := s.Store.InstallationID(ctx)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "cannot read server identity")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":     map[string]string{"handle": u.Handle, "name": u.Name},
-		"device":   d.Name,
-		"settings": agentSettingsJSON{PlayerNames: c.PlayerNames, PlayerIDs: c.PlayerIDs, DefaultTag: c.DefaultTag},
+		"user":      map[string]any{"id": u.ID, "handle": u.Handle, "name": u.Name},
+		"server_id": installation,
+		"device":    d.Name,
+		"settings":  agentSettingsJSON{PlayerNames: c.PlayerNames, PlayerIDs: c.PlayerIDs, DefaultTag: c.DefaultTag},
 	})
 }
 
 // MaxMatchBody bounds an uploaded match (a long match with movement data is
 // well under 100 kB).
 const MaxMatchBody = 4 << 20
+
+// MaxTrainingBody accommodates all 4096 bounded activity intervals plus metadata.
+const MaxTrainingBody = 512 << 10
 
 // agentMatch stores a finished match sent by an agent. The key makes the
 // upload idempotent (retries, imports run twice).
@@ -449,7 +490,7 @@ func (s *Server) agentTraining(w http.ResponseWriter, r *http.Request) {
 		Key      string          `json:"key"`
 		Training *store.Training `json:"training"`
 	}
-	if !decodeAgentJSON(w, r, &body, 1<<14) {
+	if !decodeAgentJSON(w, r, &body, MaxTrainingBody) {
 		return
 	}
 	if body.Training == nil {
@@ -458,7 +499,7 @@ func (s *Server) agentTraining(w http.ResponseWriter, r *http.Request) {
 	}
 	u, t := userFrom(r), body.Training
 	t.ID = 0
-	if err := s.Store.User(u.ID).AddTraining(r.Context(), t, body.Key); errors.Is(err, store.ErrInvalidTraining) {
+	if err := application.IngestTraining(r.Context(), s.Store.User(u.ID), body.Key, t); errors.Is(err, store.ErrInvalidTraining) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	} else if err != nil {
@@ -469,33 +510,12 @@ func (s *Server) agentTraining(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"id": t.ID})
 }
 
-// ErrInvalidMatch wraps the reasons a match sent by an agent is refused.
-var ErrInvalidMatch = errors.New("invalid match")
+// ErrInvalidMatch is retained for HTTP adapter compatibility.
+var ErrInvalidMatch = application.ErrInvalidMatch
 
-// IngestAgentMatch checks a match sent by an agent (or imported from a gaming
-// PC's files) and stores it in sc, with defaultTag when it has no valid tag.
-// key identifies the agent's copy: the same key again updates instead of
-// duplicating.
+// IngestAgentMatch adapts scoped HTTP and file imports to the ingestion use case.
 func IngestAgentMatch(ctx context.Context, sc *store.Scope, defaultTag, key string, m *store.Match) error {
-	switch {
-	case m == nil:
-		return fmt.Errorf("%w: missing match", ErrInvalidMatch)
-	case len(key) > 200:
-		return fmt.Errorf("%w: key too long", ErrInvalidMatch)
-	case m.Result != "win" && m.Result != "loss" && m.Result != "abandoned":
-		return fmt.Errorf("%w: result must be win, loss or abandoned", ErrInvalidMatch)
-	case m.StartedAt.IsZero() || m.EndedAt.Before(m.StartedAt):
-		return fmt.Errorf("%w: invalid match times", ErrInvalidMatch)
-	}
-	if err := validateMatchQuantities(m); err != nil {
-		return err
-	}
-	m.ID = 0
-	m.Tag = strings.ToLower(strings.TrimSpace(m.Tag))
-	if !store.ValidTag(m.Tag) {
-		m.Tag = defaultTag
-	}
-	return sc.Ingest(ctx, m, key)
+	return application.IngestResult(ctx, sc, defaultTag, key, m)
 }
 
 // ---------------------------------------------------------------- devices

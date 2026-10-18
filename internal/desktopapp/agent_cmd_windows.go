@@ -1,4 +1,4 @@
-package main
+package desktopapp
 
 import (
 	"context"
@@ -111,6 +111,7 @@ func cmdAgentSetup(args []string, console bool) error {
 		return fmt.Errorf(i18n.T(lang, "agent.unreachable"), cfg.Server, err)
 	}
 	cfg.Settings = hb.Settings
+	cfg.ServerID, cfg.AccountID = hb.ServerID, hb.User.ID
 	if err := agent.SaveConfig(cfgPath, cfg); err != nil {
 		return err
 	}

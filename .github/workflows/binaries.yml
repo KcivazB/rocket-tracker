@@ -1,0 +1,169 @@
+# Called at the caller's immutable revision; no publication or secrets.
+name: Build and Tests
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: dev
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CGO_ENABLED: '0'
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            os: ubuntu-latest
+            binary: rltracker-server-linux-amd64
+            package: ./cmd/rltracker-server
+            gui: ''
+          - target: windows
+            os: windows-latest
+            binary: rltracker.exe
+            package: .
+            gui: -H windowsgui
+    env:
+      VERSION: ${{ inputs.version }}
+      BINARY: ${{ matrix.binary }}
+      PACKAGE: ${{ matrix.package }}
+      GUI: ${{ matrix.gui }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build candidate and version smoke binaries
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" == dev || "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p dist
+          flags="-s -w $GUI"
+          if [[ "$VERSION" != dev ]]; then
+            flags="$flags -X rocket-tracker/internal/buildinfo.Version=$VERSION"
+          fi
+          go build -trimpath -ldflags "$flags" -o "dist/$BINARY" "$PACKAGE"
+          go build -trimpath -o dist/smoke-dev.exe "$PACKAGE"
+          go build -trimpath -ldflags '-X rocket-tracker/internal/buildinfo.Version=1.2.3' \
+            -o dist/smoke-injected.exe "$PACKAGE"
+          # The retired flag silently links: retain a negative compatibility oracle.
+          go build -trimpath -ldflags '-X main.Version=1.2.3' \
+            -o dist/smoke-legacy.exe "$PACKAGE"
+          cd dist
+          sha256sum "$BINARY" smoke-*.exe > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  tests:
+    name: Tests packages (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            os: ubuntu-latest
+            packages: ./internal/... ./cmd/... ./web
+          - target: windows
+            os: windows-latest
+            packages: ./...
+    env:
+      PACKAGES: ${{ matrix.packages }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Vet, Go tests and all frontend scripts
+        run: |
+          set -euo pipefail
+          read -r -a packages <<< "$PACKAGES"
+          go vet "${packages[@]}"
+          go test "${packages[@]}"
+          node web/tests/i18n.test.js
+          node web/tests/analytics.test.js
+          node web/tests/profiles.test.js
+          node web/tests/polling.test.js
+      - name: Scan maintained source
+        if: matrix.target == 'linux'
+        env:
+          GOTOOLCHAIN: local
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./internal/... ./web ./cmd/rltracker-server
+
+  verify:
+    name: Tests binaries (${{ matrix.target }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            os: ubuntu-latest
+            binary: rltracker-server-linux-amd64
+            argument: --version
+          - target: windows
+            os: windows-latest
+            binary: rltracker.exe
+            argument: version
+    env:
+      VERSION: ${{ inputs.version }}
+      BINARY: ${{ matrix.binary }}
+      ARGUMENT: ${{ matrix.argument }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - name: Verify the downloaded candidate and version contracts
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          # Artifact transfer preserves bytes but not executable permission bits.
+          chmod +x "$BINARY" smoke-*.exe
+          test "$("./$BINARY" "$ARGUMENT" | tr -d '\r')" = "$VERSION"
+          test "$(./smoke-dev.exe "$ARGUMENT" | tr -d '\r')" = dev
+          test "$(./smoke-injected.exe "$ARGUMENT" | tr -d '\r')" = 1.2.3
+          test "$(./smoke-legacy.exe "$ARGUMENT" | tr -d '\r')" = dev
+          sha256sum -c SHA256SUMS
+      - name: Scan the exact downloaded candidate
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          go version -m "dist/$BINARY"
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "dist/$BINARY"

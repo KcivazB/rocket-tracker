@@ -19,14 +19,14 @@ file; keep project instructions here rather than duplicating them per tool.
 
 | Change | Start with |
 |---|---|
-| Desktop startup, lifecycle, autostart | `main.go`, `desktop.go`, `internal/winutil/`, `internal/tray/` |
-| Installation wizard and server connection | `wizard.go`, `internal/server/setup.go`, `web/setup.js` |
+| Desktop startup, lifecycle, autostart | `internal/desktopapp/`, `main.go`, `internal/winutil/`, `internal/tray/` |
+| Installation wizard and server connection | `internal/desktopapp/wizard_windows.go`, `internal/server/setup.go`, `web/setup.js` |
 | Game transport and tolerant decoding | `internal/statsapi/` |
 | Shared match types, normalization and profile identity | `internal/domain/`; compatibility aliases in `internal/store/model.go` |
 | Match lifecycle, player detection, movement, training detection | `internal/tracker/` |
 | Break and tilt rules using match history | `internal/tilt/` |
 | SQLite schema, ingestion, profiles, imports and aggregates | `internal/store/` |
-| Upload queue, heartbeat, device configuration | `internal/agent/`, `agent_cmd.go` |
+| Upload queue, heartbeat, device configuration | `internal/agent/`, `internal/desktopapp/agent_cmd_windows.go` |
 | HTTP, user scope, OIDC, devices, Discord, file imports | `internal/server/`, `cmd/rltracker-server/` |
 | Analytics, browser state and rendering | `web/app.js`, `web/index.html`, `web/style.css` |
 | Translations | `web/i18n.js`, `internal/i18n/`, `web/tests/i18n.test.js` and `web/tests/analytics.test.js` |
@@ -36,14 +36,12 @@ file; keep project instructions here rather than duplicating them per tool.
 
 - Keep the existing Go module, SQLite store and embedded web assets. Introduce
   a dependency or architectural layer only to solve a demonstrated need.
-- Keep shared match values and pure profile rules in `internal/domain`, game-event
-  interpretation in the tracker, persistence/scoping/deduplication in the store,
-  and HTTP/upload concerns in their adapters. Domain production imports are
-  limited to `strings` and `time`; Tilt consumes domain matches. Training remains
-  in the store, and the tracker still uses store aliases and Stats API DTOs.
-  Preserve the store aliases and profile wrappers for source compatibility.
-  Prefer narrow interfaces with injectable time and external effects when
-  behavior varies.
+- Keep pure match/training values, observations and availability rules in
+  `internal/domain`; the tracker consumes observations and injected saves.
+  Stats API decoding belongs to its adapter. Application recording and ingestion
+  use consumer-owned ports; composition belongs to `internal/desktopapp` and the
+  server command. Preserve store aliases for compatibility. Domain and tracker
+  import tests enforce their infrastructure boundaries.
 - A server user, a Rocket League profile and a device are different identities.
   Review the relevant user/profile scope on every read, write and deduplication
   change. Do not reduce a match perspective to its GUID without considering
@@ -54,11 +52,12 @@ file; keep project instructions here rather than duplicating them per tool.
   replacement as explicit test scenarios when changing persistence. Keep
   user-edited tags and training focus in mind. Do not assume existing tests
   establish all of these guarantees.
-- An outbox delivery key is not the identity of a match. Preserve queued
-  revisions until their own acknowledgements. The outbox records its server
-  (`outbox/destination`); switching server sets pending entries aside instead
-  of sending them to the new one. Local storage and upload are separate writes,
-  not a bidirectional synchronization contract.
+- A transport key is not a match identity. Local result/training and delivery
+  intent commit together in SQLite. Destination includes normalized server URL,
+  installation ID and authenticated account ID. A token is not account identity.
+  Acknowledge only the loaded revision; preserve held/rejected/legacy records.
+  Never attach unknown legacy ownership from today's credentials. See ADR-0002
+  and the operations runbook for recovery and downgrade constraints.
 - Add schema changes as new ordered migrations in `internal/store/store.go`;
   do not rewrite migrations already applied to users' databases. Test upgrades
   from the relevant older schema using synthetic fixtures.
@@ -84,7 +83,8 @@ file; keep project instructions here rather than duplicating them per tool.
   changes need checked links, commands and a clean diff, not invented code tests.
 - The desktop root package requires Windows. A cross-build is not execution of
   Windows tests. The Go wrapper fails if Node is missing: run
-  `node web/tests/i18n.test.js` and `node web/tests/analytics.test.js`
+  `node web/tests/i18n.test.js`, `node web/tests/analytics.test.js`,
+  `node web/tests/profiles.test.js` and `node web/tests/polling.test.js`
   explicitly when changing browser text or analytics.
   The analytics script owns analytical assertions; add focused coverage for changed
   analytical rules rather than relying only on translation checks.

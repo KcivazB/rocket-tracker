@@ -24,3 +24,22 @@ Rejeter tous les nombres négatifs casserait les positions. Remplacer toute abse
 ## Validation et mise en œuvre
 
 Fixtures absent/zéro/signé, champs partiels/complets alternés, rejouabilité/import, mauvaise population et unités qualifiées. Vérifier la restitution stockée et les libellés FR/EN. Des tests synthétiques de conversion ne prouvent pas l’unité émise par le jeu. Revoir si une source qualifiée ou un besoin d’analytique partielle impose une représentation plus précise.
+
+## Mise en œuvre proposée et adoption
+
+Le code de cette proposition et les contrats actuels sont décrits dans
+[ARCHITECTURE.md](../ARCHITECTURE.md), [SPEC.md](../SPEC.md),
+[OPERATIONS.md](../OPERATIONS.md) et [RELEASING.md](../RELEASING.md).
+Les preuves finales sont liées dans le suivi d’implémentation et la PR.
+L’autorisation d’implémenter ne vaut pas acceptation des mainteneurs, intégration
+ou release. Pour ADR-0005, la séparation technique est appliquée ; politique de
+partage et intégration plateforme restent des décisions produit distinctes.
+
+### Précisions issues de l’audit #9
+
+Les cohortes comparables distinguent variante, mode et duel. La disponibilité des
+démolitions dépend de leur propre tableau. Toutes les inférences temporelles
+historiques partagent le validateur de chronologie ; les buckets « minute » font
+soixante secondes et les rythmes comparés utilisent le même temps réglementaire.
+Les pauses du minuteur suivent [ADR-0006](0006-temps-actif-et-frontieres.md).
+Les règles exécutables et leurs limites figurent dans SPEC et les tests web.

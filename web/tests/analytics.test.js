@@ -102,6 +102,179 @@ assert.strictEqual(RT.needsReload('rev:8', 'rev:7'), true);
 assert.strictEqual(RT.needsReload(3, null), true); // the last load failed: retried with no new match
 assert.strictEqual(RT.needsReload(null, 3), false);
 assert.deepStrictEqual(['v0.19.0', '0.19.0', '', undefined].map(RT.stripV), ['0.19.0', '0.19.0', '', '']);
+// M01: ties must belong to the same median group in recent form and in the comparison.
+const medianGames = Array.from({ length: 40 }, (_, i) => ({
+  result: i < 20 ? 'win' : 'loss', duration_s: 300, mode: '2v2',
+  movement: { air_pct: i < 20 ? 20 : 80 }
+}));
+const airFactor = RT.computeWinFactors(medianGames).rows.find((r) => r.key === 'air');
+assert.deepStrictEqual([airFactor.threshold, airFactor.inclusive, airFactor.hi.n, airFactor.lo.n], [80, true, 20, 20]);
+assert.strictEqual(airFactor.recentBadShare, 1);
+assert.ok(RT.computeFocusSuggestions(medianGames).some((s) => s.focus === 'aerials'));
+const reversedAir = medianGames.map((m) => ({ ...m, result: m.result === 'win' ? 'loss' : 'win' }));
+assert.strictEqual(RT.computeWinFactors(reversedAir).rows.find((r) => r.key === 'air').recentBadShare, 0);
+const strictMedian = Array.from({ length: 40 }, (_, i) => ({
+  result: i < 20 ? 'win' : 'loss', duration_s: 300, movement: { air_pct: i }
+}));
+const strictAir = RT.computeWinFactors(strictMedian).rows.find((r) => r.key === 'air');
+assert.deepStrictEqual([strictAir.inclusive, strictAir.hi.n, strictAir.recentBadShare], [false, 19, 19 / 20]);
+// M02: air time remains descriptive, with no universal good/bad direction.
+const airMetric = RT.computeMechanics(medianGames).metrics.find((m) => m.key === 'air_pct');
+assert.strictEqual(airMetric.trend, 60);
+assert.strictEqual(airMetric.higherBetter, null);
+assert.strictEqual(RT.computeMechanics(medianGames).metrics.find((m) => m.key === 'zero_boost_pct').higherBetter, false);
+// M05: uncertain timelines cannot describe a historical live score, but results remain usable.
+const timeline = {
+  result: 'win', mode: '2v2', online: true, duration_s: 300, team_score: 1, opp_score: 0,
+  goals: [{ t: 100, team: 'us' }]
+};
+const unknownGoal = { ...timeline, goals: [{ t: 100, team: '' }] };
+assert.strictEqual(RT.liveOdds([unknownGoal], '2v2', 120, 0, false).n, 0);
+const invalidTimelines = [
+  unknownGoal,
+  ...[undefined, null, '100', NaN, Infinity, -1, 301].map((t) => ({ ...timeline, goals: [{ t, team: 'us' }] })),
+  { ...timeline, goals: [null] },
+  { ...timeline, goals: [] },
+  { ...timeline, goals: [{ t: 100, team: 'them' }] },
+  { ...timeline, goals: [{ t: 100, team: 'us' }, { t: 110, team: 'us' }] },
+  { ...timeline, partial: true },
+  { ...timeline, duration_s: undefined },
+  { ...timeline, team_score: -1 },
+  { ...timeline, team_score: 0.5 },
+  { ...timeline, opp_score: undefined }
+];
+for (const m of invalidTimelines) {
+  assert.strictEqual(RT.liveOdds([m], '2v2', 60, 0, false).n, 0);
+  assert.deepStrictEqual([RT.computeKpis([m]).n, RT.computeKpis([m]).wins], [1, 1]);
+}
+assert.strictEqual(RT.liveOdds([timeline], '2v2', 60, 0, false).n, 1);
+assert.strictEqual(RT.liveOdds([timeline], '2v2', 120, 1, false).n, 1);
+assert.strictEqual(RT.liveOdds([timeline], '2v2', 120, 0, false).n, 0);
+const scoreless = { ...timeline, result: 'loss', team_score: 0, goals: [] };
+assert.strictEqual(RT.liveOdds([scoreless], '2v2', 120, 0, false).n, 1);
+assert.strictEqual(RT.liveOdds([{ ...timeline, goals: [{ t: 0, team: 'us' }] }], '2v2', 0, 1, false).n, 1);
+const qualifiedOt = { ...koOt, mode: '2v2', online: true };
+assert.strictEqual(RT.liveOdds([qualifiedOt], '2v2', 310, 0, true).n, 1);
+assert.strictEqual(RT.liveOdds([{ ...qualifiedOt, goals: [{ t: 100, team: '' }] }], '2v2', 310, 0, true).n, 0);
+// M07: no estimated restart after a terminal regulation goal; OT still starts once.
+const terminalGoal = { ...timeline, goals: [{ t: 300, team: 'us' }] };
+assert.strictEqual(RT.computeSituations([terminalGoal]).kickoff.kickoffs, 1);
+assert.strictEqual(RT.computeSituations([timeline]).kickoff.kickoffs, 2);
+assert.strictEqual(RT.computeSituations([{ ...terminalGoal, duration_s: 200, goals: [{ t: 200, team: 'us' }] }]).kickoff.kickoffs, 1);
+assert.strictEqual(RT.computeSituations([qualifiedOt]).kickoff.kickoffs, 4);
+const tiedAtEnd = { ...qualifiedOt, goals: [{ t: 100, team: 'them' }, { t: 300, team: 'us' }, { t: 320, team: 'us', overtime: true }] };
+assert.strictEqual(RT.computeSituations([tiedAtEnd]).kickoff.kickoffs, 3);
+// M10: enough sessions does not imply enough eligible first-three matches.
+const sparseGames = wm.filter((m) => m.id % 10 === 0).slice(0, 10);
+const sparseEffect = RT.computeWarmupEffect(RT.annotate(sparseGames), trainings);
+assert.deepStrictEqual([
+  sparseEffect.warm.sessions, sparseEffect.cold.sessions, sparseEffect.warm.first.n, sparseEffect.cold.first.n,
+  sparseEffect.enough, sparseEffect.delta
+], [5, 5, 5, 5, false, null]);
+I.setLang('fr');
+assert.strictEqual(RT.warmupEffectMessage(sparseEffect), 'Pour comparer, chaque groupe doit atteindre 5 sessions et 10 matchs exploitables parmi les 3 premiers : avec échauffement 5/5 sessions, 5/10 matchs ; sans échauffement 5/5 sessions, 5/10 matchs.');
+I.setLang('en');
+assert.strictEqual(RT.warmupEffectMessage(sparseEffect), 'To compare, each group needs 5 sessions and 10 eligible matches among the first 3: with a warm-up 5/5 sessions, 5/10 matches; without a warm-up 5/5 sessions, 5/10 matches.');
+assert.strictEqual(RT.warmupEffectMessage(eff), I.t('trn.effectGood', { v: '100' }));
+assert.strictEqual(RT.warmupEffectMessage({ ...eff, delta: -0.1 }), I.t('trn.effectBad', { v: '10' }));
+assert.strictEqual(RT.warmupEffectMessage({ ...eff, delta: 0 }), I.t('trn.effectFlat'));
+const noWarmup = RT.computeWarmupEffect(RT.annotate(sparseGames), []);
+assert.ok(RT.warmupEffectMessage(noWarmup).startsWith(I.t('trn.effectNone')));
+assert.ok(RT.warmupEffectMessage(noWarmup).includes('with a warm-up 0/5 sessions, 0/10 matches'));
+// Ten first-three matches per side are necessary, and five distinct sessions remain necessary too.
+const tenEach = wm.filter((m) => m.id % 10 < 2).slice(0, 20);
+const atThreshold = RT.computeWarmupEffect(RT.annotate(tenEach), trainings);
+assert.deepStrictEqual([atThreshold.warm.sessions, atThreshold.cold.sessions, atThreshold.warm.first.n, atThreshold.cold.first.n, atThreshold.enough], [5, 5, 10, 10, true]);
+const nineWarm = RT.computeWarmupEffect(RT.annotate(tenEach.filter((m) => m.id !== 1)), trainings);
+assert.deepStrictEqual([nineWarm.warm.sessions, nineWarm.warm.first.n, nineWarm.enough], [5, 9, false]);
+assert.ok(RT.warmupEffectMessage(nineWarm).includes('with a warm-up 5/5 sessions, 9/10 matches'));
+const fourSessions = RT.computeWarmupEffect(RT.annotate(wm.filter((m) => m.id < 80)), trainings);
+assert.deepStrictEqual([fourSessions.warm.sessions, fourSessions.cold.sessions, fourSessions.warm.first.n, fourSessions.cold.first.n, fourSessions.enough], [4, 4, 12, 12, false]);
+I.setLang('fr');
+assert.ok(RT.warmupEffectMessage(fourSessions).includes('avec échauffement 4/5 sessions, 12/10 matchs'));
+assert.ok(RT.warmupEffectMessage(noWarmup).startsWith(I.t('trn.effectNone')));
+I.setLang('en');
+// M06: averages give each observed match one vote, not each second of telemetry.
+const unequalCoverage = [
+  { movement: { sample_s: 300, air_pct: 10 } },
+  { movement: { sample_s: 1, air_pct: 90 } }
+];
+assert.strictEqual(RT.computeMechanics(unequalCoverage).metrics.find((m) => m.key === 'air_pct').avg, 50);
+I.setLang('fr');
+assert.ok(I.t('mech.sub', { v: '2 matchs' }).includes('Moyennes par match'));
+assert.ok(I.t('mech.sub', { v: '2 matchs' }).includes('non pondérées'));
+assert.strictEqual(I.t('mp.average'), 'Moyenne par match');
+I.setLang('en');
+assert.ok(I.t('mech.sub', { v: '2 matches' }).includes('Per-match averages'));
+assert.ok(I.t('mech.sub', { v: '2 matches' }).includes('not weighted'));
+assert.strictEqual(I.t('mp.average'), 'Per-match average');
+// M04: no magnitude-based unit guess, including either side of the old 300 boundary.
+const rawSpeeds = RT.computeMechanics([{ movement: { avg_speed: 1450 }, hits: { avg_speed: 3000, max_speed: 4300 } }]);
+assert.strictEqual(rawSpeeds.metrics.find((m) => m.key === 'avg_speed').avg, 1450);
+assert.strictEqual(rawSpeeds.metrics.find((m) => m.key === 'hits_avg').avg, 3000);
+assert.strictEqual(rawSpeeds.maxHitRaw, 4300);
+for (const defs of [RT.MECH_METRICS, RT.MOVE_STATS, RT.HIT_STATS, RT.FACTORS, RT.FATIGUE_STATS]) {
+  assert.ok(defs.every((d) => d.unit !== 'km/h'), 'unknown telemetry carries no physical unit');
+}
+assert.strictEqual(RT.statValue({ movement: { avg_speed: 95 } }, 'movement', RT.MOVE_STATS[0]), 95);
+assert.strictEqual(RT.FACTORS.find((f) => f.key === 'speed').value({ movement: { avg_speed: 95 } }), 95);
+assert.strictEqual(RT.FATIGUE_STATS.find((f) => f.key === 'hit_power').value({ hits: { avg_speed: 95 } }), 95);
+for (const lang of ['fr', 'en']) {
+  I.setLang(lang);
+  for (const value of [0, 95, 299, 300, 3120.4]) {
+    assert.strictEqual(RT.formatRawSpeed(value), RT.fmtNum(value, 1) + ' ' + I.t('unit.rawSpeed'));
+  }
+  for (const missing of [null, undefined, NaN, Infinity, '95']) assert.strictEqual(RT.formatRawSpeed(missing), '—');
+}
+I.setLang('en');
+// Declared source units are labels, never guessed or converted; incompatible units do not aggregate.
+assert.strictEqual(RT.formatRawSpeed(95, 'km/h'), RT.fmtNum(95, 1) + ' km/h');
+assert.strictEqual(RT.formatRawSpeed(1450, 'uu/s'), RT.fmtNum(1450, 1) + ' uu/s');
+assert.strictEqual(RT.formatRawSpeed(95, 'unknown'), RT.formatRawSpeed(95));
+const typed = (speed_unit) => ({ result: 'win', speed_unit, movement: { avg_speed: 95, air_pct: 20 }, hits: { avg_speed: 100, max_speed: 110 } });
+const typedMech = RT.computeMechanics([typed('uu/s')]);
+assert.strictEqual(typedMech.metrics[0].avg, 95);
+assert.strictEqual(typedMech.metrics[0].unit, 'uu/s');
+const mixedUnits = [typed('km/h'), typed('uu/s'), typed('unknown')];
+const mixedMech = RT.computeMechanics(mixedUnits);
+assert.strictEqual(mixedMech.metrics[0].avg, null);
+assert.strictEqual(mixedMech.metrics.find((m) => m.key === 'air_pct').avg, 20);
+assert.strictEqual(mixedMech.maxHitRaw, null);
+assert.strictEqual(RT.computeWinFactors(mixedUnits).rows.find((r) => r.key === 'speed').enough, false);
+assert.ok(RT.computeSessionFatigue(mixedUnits).rows.find((r) => r.key === 'speed').cells.every((c) => c.n === 0));
+assert.strictEqual(RT.liveAsMatch({ speed_unit: 'uu/s', players: [] }).speed_unit, 'uu/s');
+const mixedHistory = RT.annotate(mixedUnits.concat([typed('uu/s')]).map((m, i) => Object.assign({}, m, {
+  id: i + 1, mode: '2v2', started_at: new Date(Date.UTC(2026, 9, 18, i)).toISOString(), duration_s: 300
+})));
+const mixedBase = RT.matchBaseline(mixedHistory, 4);
+assert.strictEqual(mixedBase.movement.avg_speed.n, 0);
+assert.strictEqual(mixedBase.movement.avg_speed.unit, null);
+assert.strictEqual(mixedBase.movement.air_pct.avg, 20);
+// Omitted historical metadata must not mix with newly unqualified observations.
+const legacy = { result: 'win', movement: { avg_speed: 1500, air_pct: 20 }, hits: { avg_speed: 3000, max_speed: 4000 } };
+const unknown = { ...typed('unknown'), movement: { avg_speed: 60, air_pct: 20 } };
+const legacyUnknown = RT.computeMechanics([legacy, unknown]);
+assert.strictEqual(legacyUnknown.metrics[0].avg, null, 'legacy/unknown average must not become 780');
+assert.strictEqual(legacyUnknown.metrics[0].n, 0);
+assert.strictEqual(legacyUnknown.maxHitRaw, null);
+assert.strictEqual(legacyUnknown.metrics.find((m) => m.key === 'air_pct').avg, 20);
+assert.strictEqual(RT.computeMechanics([legacy]).metrics[0].avg, 1500);
+assert.strictEqual(RT.computeMechanics([unknown]).metrics[0].avg, 60);
+assert.notStrictEqual(RT.speedUnit(legacy), RT.speedUnit(unknown));
+assert.strictEqual(RT.speedUnit({ speed_unit: '' }), RT.speedUnit(legacy));
+assert.strictEqual(RT.computeMechanics([legacy, typed('uu/s')]).metrics[0].avg, null,
+  'historical convention is not verified source provenance');
+assert.strictEqual(RT.computeWinFactors([legacy, unknown]).rows.find((r) => r.key === 'speed').enough, false);
+assert.ok(RT.computeSessionFatigue([legacy, unknown]).rows.find((r) => r.key === 'speed').cells.every((c) => c.n === 0));
+const legacyHistory = RT.annotate([legacy, legacy, unknown, unknown].map((m, i) => ({ ...m,
+  id: i + 1, mode: '2v2', started_at: new Date(Date.UTC(2026, 9, 18, i)).toISOString(), duration_s: 300
+})));
+assert.strictEqual(RT.matchBaseline(legacyHistory, 4).movement.avg_speed.n, 0);
+for (const lang of ['fr', 'en']) {
+  I.setLang(lang);
+  assert.strictEqual(RT.formatRawSpeed(1500, RT.speedUnit(legacy)), RT.fmtNum(1500, 1) + ' ' + I.t('unit.legacySpeed'));
+  assert.strictEqual(RT.formatRawSpeed(60, RT.speedUnit(unknown)), RT.fmtNum(60, 1) + ' ' + I.t('unit.rawSpeed'));
+}
 
 // Live momentum: the last 90 s against the earlier part of the match, per team.
 {
@@ -206,4 +379,130 @@ assert.deepStrictEqual(['v0.19.0', '0.19.0', '', undefined].map(RT.stripV), ['0.
   const speedTrend = RT.computeMechanics(sm).metrics.find((m) => m.key === 'avg_speed').trend;
   assert.ok(Math.abs(speedTrend) < 1e-9, speedTrend);
 }
-console.log('analytics ok');
+// Merge contract: new live features retain unit provenance, availability and regulation metadata.
+for (const regulation_s of [180, 300]) {
+  const terminal = { ...timeline, regulation_s, duration_s: regulation_s, goals: [{ t: regulation_s, team: 'us' }] };
+  assert.strictEqual(RT.computeSituations([terminal]).kickoff.kickoffs, 1);
+  const ot = { ...terminal, overtime: true, overtime_s: 20, duration_s: regulation_s + 20,
+    team_score: 2, opp_score: 1, goals: [{ t: 90, team: 'them' }, { t: regulation_s, team: 'us' },
+      { t: regulation_s + 20, team: 'us', overtime: true }] };
+  assert.strictEqual(RT.computeSituations([ot]).kickoff.kickoffs, 3, 'terminal equalizer adds only the separately counted OT kickoff');
+  const live = RT.liveAsMatch({ mode: '1v1', regulation_s, elapsed_s: regulation_s + 20,
+    overtime: true, my_team: 0, speed_unit: 'uu/s', events: [] });
+  assert.strictEqual(live.regulation_s, regulation_s);
+  assert.strictEqual(live.overtime_s, 20);
+  assert.strictEqual(RT.isDuel(live), regulation_s === 180);
+  assert.strictEqual(live.speed_unit, 'uu/s');
+  assert.deepStrictEqual(live.events, [], 'known empty events must remain different from an old agent');
+  assert.strictEqual(RT.computeMomentum(live, live.duration_s).us.recent.shots, 0);
+}
+for (const events of [undefined, null]) {
+  const oldAgent = RT.liveAsMatch({ elapsed_s: 240, events });
+  assert.strictEqual(oldAgent.events, null);
+  assert.strictEqual(RT.computeMomentum(oldAgent, 240), null);
+}
+const mixedTrendMatches = Array.from({ length: 40 }, (_, i) => ({
+  ...typed(i < 20 ? 'uu/s' : 'unknown'), mode: '2v2', _sessIdx: i % 6 + 1,
+  movement: { avg_speed: i < 20 ? 1500 : 60, air_pct: 20 }
+}));
+const mixedTrend = RT.computeMechanics(mixedTrendMatches).metrics.find((m) => m.key === 'avg_speed');
+assert.strictEqual(mixedTrend.avg, null);
+assert.strictEqual(mixedTrend.trend, null, 'mode adjustment cannot make incompatible speed units comparable');
+assert.ok(mixedTrend.series.every((v) => v === null), 'rolling speeds cannot mix incompatible units either');
+assert.ok(RT.computeSessionFatigue(mixedTrendMatches).rows.find((r) => r.key === 'speed').cells
+  .every((c) => c.n === 0 && c.dev === null && c.delta === null));
+const unavailableCar = { car_sample_s: 0, sample_s: 90, demolished_s: 90,
+  avg_speed: null, ground_pct: null, wall_pct: null, air_pct: null, avg_boost: null };
+const unavailableMech = RT.computeMechanics([{ speed_unit: 'unknown', movement: unavailableCar }]);
+assert.strictEqual(unavailableMech.metrics[0].n, 0);
+assert.strictEqual(unavailableMech.split.n, 0, 'unavailable car fields cannot count as a known wall split');
+assert.strictEqual(unavailableMech.demolishedS, 90);
+const unqualifiedForfeit = { ...timeline, duration_s: 200, forfeit: true, goals: [{ t: 100, team: '' }] };
+assert.strictEqual(RT.liveOdds([unqualifiedForfeit], '2v2', 240, 0, false).n, 0,
+  'including forfeits must not weaken timeline qualification');
+// R2 / PROD-01: display groups must never become comparison cohorts.
+const variantGames = Array.from({ length: 40 }, (_, i) => ({
+  mode: '2v2', variant: i < 20 ? 'Hoops' : 'Dropshot', result: i < 20 ? 'win' : 'loss',
+  duration_s: 300, _sessIdx: i < 20 ? 1 : 5, me: {}, movement: { zero_boost_pct: i < 20 ? 5 : 40, avg_speed: i < 20 ? 500 : 1500 }
+}));
+assert.strictEqual(RT.modeKey(variantGames[0]), RT.modeKey(variantGames[39]));
+assert.notStrictEqual(RT.modeGroup(variantGames[0]), RT.modeGroup(variantGames[39]));
+assert.notStrictEqual(RT.modeGroup({ mode: '4v4' }), RT.modeGroup({ mode: 'Chaos' }));
+assert.strictEqual(RT.modeGroup({ mode: '2v2' }), RT.modeGroup({ mode: '2v2', variant: 'Soccar' }));
+assert.notStrictEqual(RT.modeGroup({ mode: '1v1', regulation_s: 180 }), RT.modeGroup({ mode: '1v1' }));
+assert.ok(!RT.computeWinFactors(variantGames).rows.find((r) => r.key === 'zero_boost').clear);
+assert.ok(RT.modeDeviations(variantGames, (m) => m.movement.zero_boost_pct).every((v) => v === 0));
+assert.strictEqual(RT.computeMechanics(variantGames).metrics.find((m) => m.key === 'avg_speed').trend, 0);
+assert.strictEqual(RT.computeSessionFatigue(variantGames).rows.find((r) => r.key === 'zero_boost').cells[2].delta, 0);
+const withinVariants = fm.flatMap((m) => ['Hoops', 'Dropshot'].map((variant) => ({ ...m, mode: '2v2', variant })));
+assert.ok(RT.computeWinFactors(withinVariants).clear.some((r) => r.key === 'zero_boost'), 'real within-cohort associations remain detectable');
+
+// PROD-02: union only valid bounded active intervals; absent/null retains legacy semantics.
+const iso = (t) => new Date(t).toISOString();
+const active = (a, b) => ({ started_at: iso(base + a * 1000), ended_at: iso(base + b * 1000) });
+const training = { ...active(0, 3600), active_intervals: [active(60, 90), active(0, 60), active(30, 80), active(300, 330)] };
+assert.strictEqual(RT.trainingSeconds(training), 120);
+assert.strictEqual(RT.trainingSeconds({ ...training, active_intervals: [] }), 0);
+assert.strictEqual(RT.trainingSeconds({ ...training, active_intervals: null }), 3600);
+assert.strictEqual(RT.trainingSeconds(active(0, 3600)), 3600);
+assert.strictEqual(RT.trainingSeconds({ ...training, active_intervals: [null, {}, active(-10, 10), active(3590, 3610), active(20, 10)] }), 0);
+const warmMatch = RT.annotate([{ ...timeline, started_at: iso(base + 3600 * 1000), ended_at: iso(base + 3900 * 1000) }]);
+assert.strictEqual(RT.sessionsWithWarmup(warmMatch, [training])[0].warm, null, 'an hour with two active minutes cannot qualify');
+assert.ok(RT.sessionsWithWarmup(warmMatch, [{ ...training, active_intervals: [active(0, 300)] }])[0].warm);
+const activeSummary = RT.computeTrainingSummary([training], [], base + 4000 * 1000);
+assert.deepStrictEqual([activeSummary.week, activeSummary.month, activeSummary.foci[0].seconds], [120, 120, 120]);
+
+// PROD-03: demolition availability is independent of touches; absent telemetry is not zero.
+const demosOnly = { ...timeline, hits: null, demolitions: [
+  { t: 10, player: 'Synthetic opponent', mine: false }, { t: 20, player: 'Synthetic opponent', mine: false }
+] };
+const demos = RT.computeDemos([demosOnly, { ...timeline, demolitions: [] }, { ...timeline, hits: { points: [P(0, 0, 93)] } }]);
+assert.deepStrictEqual([demos.matches, demos.taken, demos.takenPer, demos.often.n, demos.rarely.n], [2, 2, 1, 1, 1]);
+assert.strictEqual(RT.computeDemos([timeline]).takenPer, null);
+
+// PROD-04: every temporal card shares strict chronology, while final results remain usable.
+const productTimeline = { ...timeline, first_goal: 'us', team_score: 2, opp_score: 1,
+  goals: [G(30, ''), G(90, 'us'), G(240, 'us')] };
+for (const m of invalidTimelines.concat([productTimeline, { ...timeline, goals: [G(100, 'us'), G(100, 'us')] }])) {
+  assert.strictEqual(RT.goalsComplete(m), false);
+  assert.strictEqual(RT.computeScoreStates([m]).n, 0);
+  assert.strictEqual(RT.computeSituations([m]).firstUs.n + RT.computeSituations([m]).firstThem.n, 0);
+  assert.strictEqual(RT.computeSituations([m]).kickoff.matches, 0);
+  assert.strictEqual(RT.computeGoalsPerMinute([m]).matches, 0);
+  assert.strictEqual(RT.computeKpis([m]).wins, 1);
+}
+assert.strictEqual(RT.computeSituations([{ ...timeline, first_goal: 'them' }]).firstUs.n, 1, 'derive first goal from qualified events, not stale metadata');
+assert.strictEqual(RT.computeScoreStates([scoreless]).level.n, 1);
+
+// PROD-06: actual 60-second buckets, and identical pace normalization for baseline and live.
+for (const regulation_s of [180, 300]) {
+  const sample = { ...timeline, mode: '1v1', regulation_s, duration_s: regulation_s, goals: [G(90, 'us')], me: { goals: 2 } };
+  const bins = RT.computeGoalsPerMinute([sample]);
+  assert.strictEqual(bins.us[1], 1);
+  assert.strictEqual(bins.labels[1], '1–2′');
+  assert.strictEqual(bins.labels.length, regulation_s / 60 + 1);
+  assert.strictEqual(RT.computeGoalsPerMinute([{ ...sample, goals: [G(regulation_s, 'us')] }]).us[regulation_s / 60 - 1], 1);
+  const overtime = { ...sample, overtime: true, overtime_s: 60, duration_s: regulation_s + 60, me: { goals: 2 * (regulation_s + 60) / regulation_s },
+    goals: [G(regulation_s + 20, 'us', true)] };
+  assert.strictEqual(RT.computeGoalsPerMinute([overtime]).us.at(-1), 1);
+  const normalized = RT.baselineOf([sample, overtime], '1v1', 'Soccar', 50, regulation_s === 180, regulation_s);
+  assert.strictEqual(normalized.me.goals.avg, 2);
+  assert.strictEqual(RT.livePace(1, regulation_s / 2, false, regulation_s), normalized.me.goals.avg);
+  assert.strictEqual(RT.livePace(2, regulation_s, false, regulation_s), normalized.me.goals.avg);
+  assert.strictEqual(RT.livePace(3, regulation_s + 60, true, regulation_s), null);
+  const raw = RT.baselineOf([overtime], '1v1', 'Soccar', 50, regulation_s === 180);
+  assert.strictEqual(raw.me.goals.avg, overtime.me.goals);
+}
+const mixedMinutes = RT.computeGoalsPerMinute([180, 300].map((regulation_s) => ({ ...timeline, regulation_s, duration_s: regulation_s, goals: [G(90, 'us')] })));
+assert.strictEqual(mixedMinutes.us[1], 2, 'same real minute in mixed populations');
+console.log('analytics ok (R2 cohorts, active duration, availability, chronology and duel units)');
+
+// RF-03: the persisted whole-second endpoints decide active duration and warm-up eligibility.
+const fractionalTraining = { ...active(0.1, 300.3), active_intervals: [active(0.1, 60.9), active(61.1, 300.3)] };
+assert.strictEqual(RT.trainingSeconds(fractionalTraining), 299, '300 precise seconds become 299 stored seconds at separate paused endpoints');
+const persistedFractional = { ...active(0, 300), active_intervals: [active(0, 60), active(61, 300)] };
+assert.strictEqual(RT.trainingSeconds(fractionalTraining), RT.trainingSeconds(persistedFractional));
+const fractionalSession = RT.annotate([{ ...timeline, ...active(301, 601) }]);
+assert.strictEqual(RT.sessionsWithWarmup(fractionalSession, [fractionalTraining])[0].warm, null);
+assert.strictEqual(RT.trainingSeconds({ ...active(0.1, 60.3), active_intervals: [active(0.1, 30.9), active(31.1, 60.3)] }), 59);
+assert.strictEqual(RT.trainingSeconds({ ...active(0.1, 60.9), active_intervals: null }), 60, 'legacy endpoints use the same second precision');

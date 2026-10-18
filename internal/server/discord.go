@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,9 +33,14 @@ type Discord struct {
 	Client    *http.Client
 	Log       *slog.Logger
 
-	mu       sync.Mutex
-	sessions map[int64]*openSession // players with a session in progress
-	weekly   time.Time              // last weekly recap
+	mu             sync.Mutex
+	sessions       map[int64]*openSession // players with a session in progress
+	weekly         time.Time              // last weekly recap
+	weeklyProgress map[string]time.Time   // hashed destination -> processed slot
+	ctx            context.Context
+	cancel         context.CancelFunc
+	stopping       bool
+	workers        sync.WaitGroup
 }
 
 type openSession struct {
@@ -89,12 +95,47 @@ func (d *Discord) post(ctx context.Context, webhook string, e embed) error {
 	return nil
 }
 
-func (d *Discord) send(webhook string, e embed) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+func (d *Discord) send(parent context.Context, webhook string, e embed) {
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 	if err := d.post(ctx, webhook, e); err != nil && d.Log != nil {
 		d.Log.Warn("discord post failed", "title", e.Title, "err", err)
 	}
+}
+
+// Bind sets the lifetime before handlers can admit asynchronous highlights.
+func (d *Discord) Bind(parent context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.ctx == nil && !d.stopping {
+		d.ctx, d.cancel = context.WithCancel(parent)
+	}
+}
+
+// Close stops admission, cancels and joins every admitted highlight.
+func (d *Discord) Close() {
+	d.mu.Lock()
+	d.stopping = true
+	if d.cancel != nil {
+		d.cancel()
+	}
+	d.mu.Unlock()
+	d.workers.Wait()
+}
+
+func (d *Discord) enqueue(webhook string, e embed) {
+	d.mu.Lock()
+	if d.stopping {
+		d.mu.Unlock()
+		return
+	}
+	parent := d.ctx
+	if parent == nil {
+		parent = context.Background()
+	} // standalone uses still need Close
+	d.workers.Add(1)
+	d.mu.Unlock()
+	go func() { defer d.workers.Done(); d.send(parent, webhook, e) }()
 }
 
 // Test posts a test message to a player's webhook (the Settings button).
@@ -131,7 +172,7 @@ func (d *Discord) Match(u *store.User, webhook string, m *store.Match, ms []*sto
 	d.mu.Unlock()
 
 	if lines := d.highlights(m, ms); len(lines) > 0 {
-		go d.send(webhook, embed{
+		d.enqueue(webhook, embed{
 			Title:       d.t("discord.matchTitle", displayName(u), m.TeamScore, m.OppScore, m.Mode),
 			Description: strings.Join(lines, "\n"),
 			URL:         d.playerURL(u) + fmt.Sprintf("/match/%d", m.ID),
@@ -197,6 +238,15 @@ func winStreak(ms []*store.Match) int {
 
 // Run closes the finished sessions and posts the weekly recap until ctx ends.
 func (d *Discord) Run(ctx context.Context, st *store.Store) {
+	d.Bind(ctx)
+	defer d.Close()
+	d.mu.Lock()
+	bound := d.ctx
+	d.mu.Unlock()
+	if bound == nil {
+		return
+	}
+	ctx = bound
 	d.loadState()
 	if d.weekly.IsZero() { // first start: the next recap is next Monday's
 		d.weekly = lastWeeklySlot(time.Now())
@@ -244,7 +294,7 @@ func (d *Discord) closeSessions(ctx context.Context, st *store.Store, now time.T
 			}
 		}
 		if e, ok := d.sessionRecap(s.user, ms, s.last); ok {
-			d.send(c.DiscordWebhook, e)
+			d.send(ctx, c.DiscordWebhook, e)
 		}
 	}
 }
@@ -327,13 +377,37 @@ func (d *Discord) weeklyRecap(ctx context.Context, st *store.Store, now time.Tim
 		return
 	}
 	if ok {
-		// Once per player: a webhook that fails is not retried (the others
-		// would get the recap twice).
 		for _, h := range hooks {
-			if err := d.post(ctx, h, e); err != nil && d.Log != nil {
+			key := fmt.Sprintf("%x", sha256.Sum256([]byte(h)))
+			d.mu.Lock()
+			already := !d.weeklyProgress[key].Before(due)
+			d.mu.Unlock()
+			if already {
+				continue
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			err := d.post(ctx, h, e)
+			if err != nil && ctx.Err() != nil {
+				return
+			} // shutdown must not consume this slot
+			if err != nil && d.Log != nil {
 				d.Log.Warn("discord post failed", "title", e.Title, "err", err)
 			}
+			// Non-cancellation failures remain best-effort. Preserve per-destination
+			// progress so restart retries unsent destinations without replaying others.
+			d.mu.Lock()
+			if d.weeklyProgress == nil {
+				d.weeklyProgress = map[string]time.Time{}
+			}
+			d.weeklyProgress[key] = due
+			d.mu.Unlock()
+			d.saveState()
 		}
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	d.mu.Lock()
 	d.weekly = due
@@ -427,11 +501,13 @@ func (d *Discord) loadState() {
 		return
 	}
 	var s struct {
-		Weekly time.Time `json:"weekly"`
+		Weekly   time.Time            `json:"weekly"`
+		Progress map[string]time.Time `json:"weekly_progress"`
 	}
 	if json.Unmarshal(b, &s) == nil {
 		d.mu.Lock()
 		d.weekly = s.Weekly
+		d.weeklyProgress = s.Progress
 		d.mu.Unlock()
 	}
 }
@@ -441,7 +517,10 @@ func (d *Discord) saveState() {
 		return
 	}
 	d.mu.Lock()
-	b, _ := json.Marshal(map[string]time.Time{"weekly": d.weekly})
+	b, _ := json.Marshal(struct {
+		Weekly   time.Time            `json:"weekly"`
+		Progress map[string]time.Time `json:"weekly_progress,omitempty"`
+	}{d.weekly, d.weeklyProgress})
 	d.mu.Unlock()
 	if err := os.WriteFile(d.StateFile, b, 0o644); err != nil && d.Log != nil {
 		d.Log.Warn("discord state", "err", err)

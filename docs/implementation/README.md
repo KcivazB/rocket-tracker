@@ -1,10 +1,20 @@
 # Plan d’implémentation
 
+Suite de l’audit : [plan de correction des 22 findings de l’issue #9](ISSUE-9-PLAN.md) et [matrice de vérification](ISSUE-9-VERIFICATION.md).
+
 18 octobre 2026. Proposition fondée sur `6f531fd43be3bcd6f3a746e3b352103ef2a06ef3`, à revalider au départ de chaque lot. Ce plan ordonne les travaux du rapport ; sa rédaction seule ne constitue pas une implémentation. Les statuts de préparation se rapportent à la révision de référence ; les preuves d’avancement sont portées par les PR et les fiches mises à jour. Il ne crée pas une seconde roadmap acceptée.
 
 [Audit consolidé et plan publié](https://github.com/KcivazB/rocket-tracker/issues/2#issuecomment-6250332932) · [Architecture actuelle](../ARCHITECTURE.md) · [Décisions durables — ADR](../decisions/README.md)
 
 **Perspective proposée : corriger d’abord les invariants démontrés, puis extraire l’architecture par parcours complet.** Garder un module Go, SQLite, le dashboard embarqué et les deux exécutables actuels. Les correctifs et les décisions produit ne doivent pas attendre le refactor complet.
+
+## État de la proposition complète
+
+Voir [la requalification](REQUALIFICATION.md) et [les preuves finales](VERIFICATION.md).
+Les lots L0–L10 disposent de leur implémentation et de leur fiche de livraison ;
+les qualifications externes et l’adoption des hypothèses produit sont séparées.
+Une PR proposée et testée n’est pas une intégration, release ou déploiement.
+Les sections de préparation ci-dessous conservent les critères initiaux.
 
 ## Durée de vie des documents
 

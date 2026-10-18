@@ -13,6 +13,7 @@ import (
 type revisions struct {
 	mu   sync.Mutex
 	base int64
+	all  int64
 	n    map[int64]int64
 }
 
@@ -24,6 +25,7 @@ func newRevisions() *revisions {
 func (s *Store) touch(uid int64) {
 	s.rev.mu.Lock()
 	s.rev.n[uid]++
+	s.rev.all++
 	s.rev.mu.Unlock()
 }
 
@@ -32,4 +34,12 @@ func (sc *Scope) DataRev() int64 {
 	sc.s.rev.mu.Lock()
 	defer sc.s.rev.mu.Unlock()
 	return sc.s.rev.base + sc.s.rev.n[sc.uid]
+}
+
+// SharedRev invalidates relationships whose other account may have changed.
+// It deliberately over-invalidates on any write rather than miss a join update.
+func (sc *Scope) SharedRev() int64 {
+	sc.s.rev.mu.Lock()
+	defer sc.s.rev.mu.Unlock()
+	return sc.s.rev.base + sc.s.rev.all
 }
