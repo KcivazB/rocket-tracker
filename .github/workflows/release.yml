@@ -49,11 +49,11 @@ jobs:
           test "$GITHUB_REPOSITORY" = KcivazB/rocket-tracker
           test "$GITHUB_EVENT_NAME" = push
           test "$GITHUB_REF" = "refs/tags/v$EXPECTED_VERSION"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: binaries-linux-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist/linux
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: binaries-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist/windows
