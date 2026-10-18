@@ -2,7 +2,7 @@
 #   docker build -t rocket-tracker-server .
 # See docs/SELF_HOSTING.md and docker-compose.example.yml.
 
-FROM golang:1.26.9-alpine AS build
+FROM golang:1.27.2-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
