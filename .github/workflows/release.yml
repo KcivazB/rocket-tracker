@@ -66,7 +66,7 @@ jobs:
           cp dist/windows/rltracker.exe dist/
           cd dist
           sha256sum rltracker.exe rltracker-server-linux-amd64 > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           name: Rocket Tracker ${{ github.ref_name }}
           generate_release_notes: true
