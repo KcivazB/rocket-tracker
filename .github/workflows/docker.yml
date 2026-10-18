@@ -37,7 +37,7 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
           fi
           printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Export without registry credentials
         uses: docker/build-push-action@v6
         with:
@@ -237,7 +237,7 @@ jobs:
           test "$(cat image-id.txt)" = "$IMAGE_ID"
           docker load --input image.tar
           test "$(docker image inspect rocket-tracker:ci --format '{{.Id}}')" = "$IMAGE_ID"
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - id: meta
         uses: docker/metadata-action@v5
         with:
