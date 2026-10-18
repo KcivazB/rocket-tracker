@@ -4,9 +4,9 @@ go 1.26.9
 
 require (
 	fyne.io/systray v1.12.2
-	github.com/coreos/go-oidc/v3 v3.17.0
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.4
-	golang.org/x/oauth2 v0.34.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.60.1
 )
